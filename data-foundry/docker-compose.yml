@@ -1,0 +1,93 @@
+version: "3.8"
+
+services:
+  # The Database: PostgreSQL with Row-Level Security for Multi-Tenancy
+  db:
+    image: postgres:15-alpine
+    container_name: data_foundry_db
+    environment:
+      POSTGRES_USER: foundry_user
+      POSTGRES_PASSWORD: foundry_password
+      POSTGRES_DB: data_foundry
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U foundry_user -d data_foundry"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # The Human-in-the-Loop UI
+  label-studio:
+    image: heartexlabs/label-studio:latest
+    container_name: data_foundry_label_studio
+    ports:
+      - "8080:8080"
+    volumes:
+      - label_studio_data:/label-studio/data
+    environment:
+      - DJANGO_DB=sqlite
+      - LABEL_STUDIO_USERNAME=admin@datafoundry.com
+      - LABEL_STUDIO_PASSWORD=admin123
+    # SQLite will be used for simpler setup
+    # In production, can migrate to PostgreSQL later
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # The Task Queue Broker
+  redis:
+    image: redis:7-alpine
+    container_name: data_foundry_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Prefect Server for Workflow Orchestration
+  prefect-server:
+    image: prefecthq/prefect:2-latest
+    container_name: data_foundry_prefect_server
+    ports:
+      - "4200:4200"
+    command: prefect server start --host 0.0.0.0
+    environment:
+      - PREFECT_API_DATABASE_CONNECTION_URL=postgresql+asyncpg://foundry_user:foundry_password@db:5432/data_foundry
+      - PREFECT_SERVER_API_HOST=0.0.0.0
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - prefect_data:/root/.prefect
+
+  # Optional: Prefect Agent for Task Execution
+  prefect-agent:
+    image: prefecthq/prefect:2-python3.11
+    container_name: data_foundry_prefect_agent
+    command: prefect agent start --pool default-agent-pool
+    environment:
+      - PREFECT_API_URL=http://prefect-server:4200/api
+    depends_on:
+      - prefect-server
+      - redis
+    volumes:
+      - prefect_data:/root/.prefect
+      - ./src:/app/src
+
+volumes:
+  postgres_data:
+  redis_data:
+  label_studio_data:
+  prefect_data:
+
+networks:
+  default:
+    name: data_foundry_network
