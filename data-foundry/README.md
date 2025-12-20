@@ -83,6 +83,7 @@ Data Foundry is a comprehensive **Enrichment-as-a-Service** platform that transf
 - Python 3.11+ or higher
 - Docker and Docker Compose
 - UV package manager (recommended)
+- Git and GitHub CLI (for contributions)
 
 ### Installation
 
@@ -368,6 +369,82 @@ pre-commit install
 pre-commit run --all-files
 ```
 
+## 🔧 Development
+
+### Development Setup
+
+The project uses Git Flow for version control. The `develop` branch is the default branch for all development work.
+
+#### Git Flow Workflow
+
+```bash
+# Clone and setup
+git clone git@github.com:ai-rio/data-foundry.git
+cd data-foundry
+git checkout develop
+
+# Start a new feature
+git flow feature start <feature-name>
+
+# Work on feature...
+# Commit changes
+git add .
+git commit -m "Implement feature"
+
+# Finish and merge to develop
+git flow feature finish <feature-name>
+
+# Create a release
+git flow release start v1.0.0
+```
+
+#### Development Tools
+
+The project includes comprehensive tooling for code quality:
+
+```bash
+# Format code
+make format
+
+# Run linting
+make lint
+
+# Run tests
+make test
+
+# Run full CI pipeline
+make ci
+
+# Or run individually
+uv run ruff check src/
+uv run black src/
+uv run pytest
+```
+
+#### Code Quality Standards
+
+- **Formatting**: Black (88 char line limit)
+- **Linting**: Ruff with comprehensive rules
+- **Import Sorting**: isort with Black compatibility
+- **Type Checking**: MyPy (gradual adoption)
+- **Testing**: pytest with coverage reporting
+- **Pre-commit**: Hooks for automatic quality checks
+
+### Running Tests
+
+```bash
+# Run all tests
+pytest
+
+# Run tests with coverage
+pytest --cov=src --cov-report=html
+
+# Run specific test categories
+pytest tests/unit/
+pytest tests/integration/
+pytest tests/api/
+```
+
 ## 📚 API Documentation
 
 ### Core Endpoints
@@ -416,11 +493,80 @@ DATABASE_URL=postgresql://user:pass@prod-db:5432/datafoundry
 
 ## 🤝 Contributing
 
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/amazing-feature`
-3. Commit changes: `git commit -m 'Add amazing feature'`
-4. Push to branch: `git push origin feature/amazing-feature`
-5. Open a Pull Request
+We follow Git Flow workflow for all contributions. Please follow these steps:
+
+### For New Features
+
+1. Fork the repository to your GitHub account
+2. Clone and setup with develop branch:
+   ```bash
+   git clone git@github.com:YOUR_USERNAME/data-foundry.git
+   cd data-foundry
+   git checkout develop
+   git remote add upstream git@github.com:ai-rio/data-foundry.git
+   ```
+3. Create a feature branch:
+   ```bash
+   git flow feature start <feature-name>
+   ```
+4. Make your changes with proper code quality:
+   ```bash
+   make format          # Format code
+   make lint           # Check linting
+   make test           # Run tests
+   make ci             # Full CI pipeline
+   ```
+5. Commit your changes with clear messages
+6. Finish the feature:
+   ```bash
+   git flow feature finish <feature-name>
+   ```
+7. Create a Pull Request from your feature branch to `develop`
+
+### For Bug Fixes
+
+1. Create a bugfix branch: `git flow bugfix start <bug-description>`
+2. Fix the issue
+3. Run tests and ensure they pass
+4. Finish the bugfix: `git flow bugfix finish <bug-description>`
+
+### Code Quality Requirements
+
+All contributions must pass the CI pipeline:
+- ✅ Code formatted (Black + ruff + isort)
+- ✅ Linting checks pass (ruff)
+- ✅ Tests pass with coverage
+- ✅ Type checking passes (MyPy where applicable)
+
+### Development Commands Reference
+
+```bash
+# Common development tasks
+make format      # Format all code
+make lint        # Check linting
+make test        # Run tests
+make test-cov    # Tests with coverage
+make ci          # Full CI pipeline
+make clean       # Clean cache/artifacts
+
+# Docker operations
+make docker-up    # Start all services
+make docker-down  # Stop all services
+make docker-logs  # View logs
+```
+
+### Pre-commit Hooks
+
+Pre-commit hooks are configured to run automatically before each commit:
+- Code formatting check
+- Import sorting check
+- Linting with ruff
+- Basic test validation
+
+Install them with:
+```bash
+make setup
+```
 
 ## 📄 License
 
