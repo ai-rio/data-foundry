@@ -78,6 +78,17 @@ class DataRecord(SQLModel, table=True):
     import_batch_id: Optional[str] = Field(description="Batch import ID")
     parent_record_id: Optional[str] = Field(description="Parent record ID (for relationships)")
 
+    # AI Processing Metadata (enhanced)
+    ai_model: Optional[str] = Field(description="AI model used for processing")
+    ai_request_id: Optional[str] = Field(description="AI request identifier")
+    ai_tokens_used: Optional[int] = Field(description="Total AI tokens used")
+    ai_cost: Optional[str] = Field(description="AI processing cost as string")
+    ai_processing_time_ms: Optional[float] = Field(description="AI processing time in milliseconds")
+
+    # Provenance and audit trail
+    provenance_metadata: Optional[str] = Field(sa_type=JSON, description="Provenance metadata (JSON)")
+    processing_history: Optional[str] = Field(sa_type=JSON, description="Processing history (JSON)")
+
     class Config:
         """Pydantic configuration."""
         use_enum_values = True

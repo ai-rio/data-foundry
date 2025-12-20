@@ -100,76 +100,193 @@ def apply_pii_redaction(data: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 @task
-def apply_ai_labeling(data: list[dict[str, Any]]) -> list[dict[str, Any]]:
+async def apply_ai_labeling(data: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
-    Apply AI labeling using OpenAI API.
+    Apply AI labeling using LiteLLM integrated AI Service.
     """
     logger = get_run_logger()
-    logger.info("Applying AI labeling")
+    logger.info("Applying AI labeling with LiteLLM integration")
 
     try:
-        from openai import OpenAI
+        from src.services.ai_service import AIService, AIRequest
+        import json
 
-        client = OpenAI(api_key=settings.OPENAI_API_KEY)
+        # Initialize AI Service
+        ai_service = AIService()
+        await ai_service.initialize()
 
         labeled_data = []
         for record in data:
-            # Create labeling prompt
-            prompt = f"""
-            Analyze this record and assign labels:
-            Name: {record.get("name", "N/A")}
-            Email: {record.get("email", "N/A")}
-            Phone: {record.get("phone", "N/A")}
+            try:
+                # Create labeling prompt
+                prompt = f"""
+                Analyze this record and assign labels:
+                Name: {record.get("name", "N/A")}
+                Email: {record.get("email", "N/A")}
+                Phone: {record.get("phone", "N/A")}
 
-            Assign one of these categories:
-            - 'high_value' (appears to be enterprise/corporate)
-            - 'medium_value' (appears to be small business)
-            - 'low_value' (appears to be personal)
+                Assign one of these categories:
+                - 'high_value' (appears to be enterprise/corporate)
+                - 'medium_value' (appears to be small business)
+                - 'low_value' (appears to be personal)
 
-            Also provide a confidence score (0-1).
+                Also provide a confidence score (0-1).
 
-            Return JSON: {{"category": "...", "confidence": ..., "reasoning": "..."}}
-            """
+                Return JSON: {{"category": "...", "confidence": ..., "reasoning": "..."}}
+                """
 
-            # Call OpenAI API (synchronous)
-            response = client.chat.completions.create(
-                model=settings.OPENAI_MODEL,
-                messages=[
-                    {"role": "system", "content": "You are a data labeling expert."},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=settings.OPENAI_TEMPERATURE,
-                max_tokens=200,
-            )
+                # Create AI request
+                request = AIRequest(
+                    prompt=prompt,
+                    system_prompt="You are a data labeling expert.",
+                    temperature=settings.OPENAI_TEMPERATURE,
+                    max_tokens=200,
+                    response_format="json",
+                    tenant_id=record.get("tenant_id", "unknown"),
+                    user_id=record.get("user_id"),
+                    use_cache=True
+                )
 
-            # Parse response
-            import json
+                # Call AI Service
+                response = await ai_service.completion(request)
 
-            ai_result = json.loads(response.choices[0].message.content)
+                # Parse response
+                ai_result = json.loads(response.content)
 
-            # Add AI results to record
-            labeled_record = record.copy()
-            labeled_record.update(
-                {
-                    "ai_category": ai_result.get("category"),
-                    "ai_confidence": ai_result.get("confidence"),
-                    "ai_reasoning": ai_result.get("reasoning"),
-                    "ai_model": settings.OPENAI_MODEL,
-                    "ai_processed_at": datetime.utcnow().isoformat(),
+                # Add AI results to record with enhanced metadata
+                labeled_record = record.copy()
+                labeled_record.update(
+                    {
+                        "ai_category": ai_result.get("category"),
+                        "ai_confidence": ai_result.get("confidence"),
+                        "ai_reasoning": ai_result.get("reasoning"),
+                        "ai_model": response.model,
+                        "ai_processed_at": datetime.utcnow().isoformat(),
+                        "ai_request_id": response.request_id,
+                        "ai_tokens_used": response.usage.total_tokens,
+                        "ai_cost": str(response.cost),
+                        "ai_processing_time_ms": response.response_time_ms,
+                        "ai_fallback_used": response.fallback_used,
+                        "ai_from_cache": response.from_cache
+                    }
+                )
+
+                # Add provenance metadata
+                provenance = {
+                    "ai_service_version": "1.0.0",
+                    "processing_pipeline": "ingestion_v2",
+                    "model_provider": response.model.split("/")[0] if "/" in response.model else "openai",
+                    "token_breakdown": {
+                        "prompt_tokens": response.usage.prompt_tokens,
+                        "completion_tokens": response.usage.completion_tokens
+                    },
+                    "cost_breakdown": {
+                        "currency": "USD",
+                        "total_cost": str(response.cost)
+                    }
                 }
-            )
+                labeled_record["provenance_metadata"] = json.dumps(provenance)
 
-            labeled_data.append(labeled_record)
+                # Add processing history
+                processing_history = []
+                if response.retry_count > 0:
+                    processing_history.append({
+                        "event": "model_retry",
+                        "count": response.retry_count,
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
+                if response.fallback_used:
+                    processing_history.append({
+                        "event": "model_fallback",
+                        "primary_model": settings.PRIMARY_MODEL,
+                        "fallback_model": response.model,
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
+                if response.from_cache:
+                    processing_history.append({
+                        "event": "cache_hit",
+                        "cache_key": response.completion_id,
+                        "timestamp": response.cached_at.isoformat() if response.cached_at else datetime.utcnow().isoformat()
+                    })
+
+                labeled_record["processing_history"] = json.dumps(processing_history)
+
+                labeled_data.append(labeled_record)
+
+            except Exception as e:
+                logger.error(f"AI labeling failed for record {record.get('id')}: {str(e)}")
+                # Add error to record but continue processing
+                error_record = record.copy()
+                error_record["ai_error"] = str(e)
+                error_record["ai_processed_at"] = datetime.utcnow().isoformat()
+                labeled_data.append(error_record)
 
         logger.info(f"AI labeling applied to {len(labeled_data)} records")
         return labeled_data
 
     except Exception as e:
-        logger.error(f"AI labeling failed: {str(e)}")
-        # Return data without AI labels
-        for record in data:
-            record["ai_error"] = str(e)
-        return data
+        logger.error(f"AI labeling service initialization failed: {str(e)}")
+        # Fallback to original OpenAI if available
+        logger.info("Attempting fallback to direct OpenAI API")
+
+        try:
+            from openai import OpenAI
+
+            client = OpenAI(api_key=settings.OPENAI_API_KEY)
+
+            labeled_data = []
+            for record in data:
+                prompt = f"""
+                Analyze this record and assign labels:
+                Name: {record.get("name", "N/A")}
+                Email: {record.get("email", "N/A")}
+                Phone: {record.get("phone", "N/A")}
+
+                Assign one of these categories:
+                - 'high_value' (appears to be enterprise/corporate)
+                - 'medium_value' (appears to be small business)
+                - 'low_value' (appears to be personal)
+
+                Also provide a confidence score (0-1).
+
+                Return JSON: {{"category": "...", "confidence": ..., "reasoning": "..."}}
+                """
+
+                response = client.chat.completions.create(
+                    model=settings.OPENAI_MODEL,
+                    messages=[
+                        {"role": "system", "content": "You are a data labeling expert."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=settings.OPENAI_TEMPERATURE,
+                    max_tokens=200,
+                )
+
+                ai_result = json.loads(response.choices[0].message.content)
+
+                labeled_record = record.copy()
+                labeled_record.update(
+                    {
+                        "ai_category": ai_result.get("category"),
+                        "ai_confidence": ai_result.get("confidence"),
+                        "ai_reasoning": ai_result.get("reasoning"),
+                        "ai_model": settings.OPENAI_MODEL,
+                        "ai_processed_at": datetime.utcnow().isoformat(),
+                        "ai_fallback_method": "direct_openai"
+                    }
+                )
+
+                labeled_data.append(labeled_record)
+
+            logger.info(f"Fallback AI labeling applied to {len(labeled_data)} records")
+            return labeled_data
+
+        except Exception as fallback_error:
+            logger.error(f"Fallback AI labeling also failed: {str(fallback_error)}")
+            # Return data without AI labels but with error
+            for record in data:
+                record["ai_error"] = f"Primary: {str(e)}, Fallback: {str(fallback_error)}"
+            return data
 
 
 @task
@@ -314,11 +431,11 @@ async def data_ingestion_flow(
             redacted_data = raw_data
 
         # Step 3: Apply AI labeling
-        if enable_ai_labeling and settings.OPENAI_API_KEY:
+        if enable_ai_labeling and (settings.OPENAI_API_KEY or settings.PRIMARY_MODEL):
             labeled_data = await apply_ai_labeling(redacted_data)
         else:
             labeled_data = redacted_data
-            logger.info("Skipping AI labeling")
+            logger.info("Skipping AI labeling - no API key configured")
 
         # Step 4: Route for human review
         if enable_human_review:
