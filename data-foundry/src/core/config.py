@@ -37,6 +37,15 @@ class Settings(BaseSettings):
     # Redis Configuration
     REDIS_URL: str = "redis://localhost:6379/0"
     REDIS_TASK_QUEUE_NAME: str = "data_foundry_tasks"
+    REDIS_CACHE_DB: int = 0
+    REDIS_CACHE_PREFIX: str = "data_foundry"
+    REDIS_MAX_CONNECTIONS: int = 20
+    REDIS_RETRY_ATTEMPTS: int = 3
+    REDIS_RETRY_DELAY: float = 0.1
+    REDIS_HEALTH_CHECK_INTERVAL: float = 30.0
+    REDIS_CONNECTION_TIMEOUT: int = 5
+    REDIS_SOCKET_TIMEOUT: int = 5
+    REDIS_SOCKET_CONNECT_TIMEOUT: int = 5
 
     # AI Model Configuration
     OPENAI_API_KEY: str | None = None
@@ -48,6 +57,19 @@ class Settings(BaseSettings):
     ANTHROPIC_MODEL: str = "claude-3-opus-20240229"
     ANTHROPIC_TEMPERATURE: float = 0.3
     ANTHROPIC_MAX_TOKENS: int = 2048
+
+    # LiteLLM Configuration
+    LITELLM_LOGGING: bool = True
+    LITELLM_CACHE_TTL: int = 3600  # 1 hour
+    LITELLM_REQUEST_TIMEOUT: int = 30
+    PRIMARY_MODEL: str = "gpt-4o"
+    FALLBACK_MODELS: list[str] = ["claude-3-5-sonnet", "gpt-4o-mini"]
+    MODEL_LIST: list[str] = ["gpt-4o", "claude-3-5-sonnet", "gpt-4o-mini", "gpt-3.5-turbo"]
+
+    # Cost Tracking Configuration
+    ENABLE_COST_TRACKING: bool = True
+    COST_TRACKING_CURRENCY: str = "USD"
+    BILLING_PRECISION: int = 6
 
     # Label Studio Configuration
     LABEL_STUDIO_URL: str = "http://localhost:8080"
@@ -87,6 +109,23 @@ class Settings(BaseSettings):
     ENABLE_METRICS: bool = True
     METRICS_PORT: int = 9090
 
+    # Prompt Management Configuration
+    PROMPT_TEMPLATE_DIR: str = "src/core/prompts/templates"
+    PROMPT_CACHE_ENABLED: bool = True
+    PROMPT_CACHE_TTL: int = 3600  # 1 hour
+    PROMPT_CACHE_KEY_PREFIX: str = "prompt_cache"
+    PROMPT_CACHE_MAX_SIZE: int = 10000
+    PROMPT_CACHE_LOCAL_FALLBACK: bool = True
+    PROMPT_CACHE_STATS_ENABLED: bool = True
+    PROMPT_VERSION_CHECK: bool = True
+    PROMPT_VALIDATION_ENABLED: bool = True
+    PROMPT_DEBUG_MODE: bool = False
+
+    # Prompt Optimization
+    PROMPT_MAX_LENGTH: int = 32000  # Maximum prompt length in characters
+    PROMPT_TRUNCATE_ENABLED: bool = False  # Whether to truncate long prompts
+    PROMPT_COST_TRACKING: bool = True
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
@@ -110,6 +149,16 @@ class Settings(BaseSettings):
         if not self.DATABASE_URL.startswith("postgresql+asyncpg://"):
             return self.DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
         return self.DATABASE_URL
+
+    @property
+    def prompt_template_dir_path(self) -> str:
+        """Get absolute path for prompt template directory."""
+        import os
+        if os.path.isabs(self.PROMPT_TEMPLATE_DIR):
+            return self.PROMPT_TEMPLATE_DIR
+
+        # Relative to project root
+        return os.path.join(os.getcwd(), self.PROMPT_TEMPLATE_DIR)
 
 
 @lru_cache
@@ -147,4 +196,45 @@ AI_PROVIDERS = {
         "temperature": settings.ANTHROPIC_TEMPERATURE,
         "max_tokens": settings.ANTHROPIC_MAX_TOKENS,
     },
+    "litellm": {
+        "primary_model": settings.PRIMARY_MODEL,
+        "fallback_models": settings.FALLBACK_MODELS,
+        "model_list": settings.MODEL_LIST,
+        "logging": settings.LITELLM_LOGGING,
+        "cache_ttl": settings.LITELLM_CACHE_TTL,
+        "request_timeout": settings.LITELLM_REQUEST_TIMEOUT,
+        "enable_cost_tracking": settings.ENABLE_COST_TRACKING,
+        "billing_precision": settings.BILLING_PRECISION,
+    },
+}
+
+# Prompt Management Configuration
+PROMPT_CONFIG = {
+    "template_dir": settings.prompt_template_dir_path,
+    "cache_enabled": settings.PROMPT_CACHE_ENABLED,
+    "cache_ttl": settings.PROMPT_CACHE_TTL,
+    "cache_key_prefix": settings.PROMPT_CACHE_KEY_PREFIX,
+    "cache_max_size": settings.PROMPT_CACHE_MAX_SIZE,
+    "cache_local_fallback": settings.PROMPT_CACHE_LOCAL_FALLBACK,
+    "cache_stats_enabled": settings.PROMPT_CACHE_STATS_ENABLED,
+    "version_check": settings.PROMPT_VERSION_CHECK,
+    "validation_enabled": settings.PROMPT_VALIDATION_ENABLED,
+    "debug_mode": settings.PROMPT_DEBUG_MODE,
+    "max_length": settings.PROMPT_MAX_LENGTH,
+    "truncate_enabled": settings.PROMPT_TRUNCATE_ENABLED,
+    "cost_tracking": settings.PROMPT_COST_TRACKING,
+}
+
+# Redis Cache Configuration
+REDIS_CACHE_CONFIG = {
+    "url": settings.REDIS_URL,
+    "db": settings.REDIS_CACHE_DB,
+    "prefix": settings.REDIS_CACHE_PREFIX,
+    "max_connections": settings.REDIS_MAX_CONNECTIONS,
+    "retry_attempts": settings.REDIS_RETRY_ATTEMPTS,
+    "retry_delay": settings.REDIS_RETRY_DELAY,
+    "health_check_interval": settings.REDIS_HEALTH_CHECK_INTERVAL,
+    "connection_timeout": settings.REDIS_CONNECTION_TIMEOUT,
+    "socket_timeout": settings.REDIS_SOCKET_TIMEOUT,
+    "socket_connect_timeout": settings.REDIS_SOCKET_CONNECT_TIMEOUT,
 }

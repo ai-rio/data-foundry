@@ -1,0 +1,102 @@
+# Data Classification Template
+# Version: 1.0.0
+# Type: User-facing prompt template for data classification tasks
+
+metadata:
+  name: "Data Classification Template"
+  version: "1.0.0"
+  description: "Template for classifying data records into predefined categories with confidence scoring"
+  type: "data_classification"
+  author: "Data Foundry Team"
+  created_at: "2024-12-20"
+  required_variables:
+    - data_record
+    - categories
+    - context
+  optional_variables:
+    - examples
+    - rules
+    - threshold
+
+template: |
+  Please analyze the following data record and classify it into one of the provided categories.
+
+  Context: {{ context }}
+
+  Data Record:
+  ```json
+  {{ data_record | tojson(indent=2) }}
+  ```
+
+  Available Categories:
+  {% for category in categories %}
+  - {{ category }}
+  {% endfor %}
+
+  {% if examples %}
+  Examples:
+  {% for example in examples %}
+  - Input: {{ example.input | tojson }}
+    Expected Category: {{ example.category }}
+    Reasoning: {{ example.reasoning }}
+  {% endfor %}
+  {% endif %}
+
+  {% if rules %}
+  Classification Rules:
+  {% for rule in rules %}
+  - {{ rule }}
+  {% endfor %}
+  {% endif %}
+
+  Please evaluate the data record and provide:
+  1. The most appropriate category
+  2. Your confidence in this classification (0.0-1.0)
+  3. Detailed reasoning for your decision
+  4. Any PII or sensitive information detected
+
+  {% if threshold %}
+  Note: Classifications with confidence below {{ threshold }} will require human review.
+  {% endif %}
+
+response_format:
+  type: "object"
+  properties:
+    category:
+      type: "string"
+      description: "The selected category for the data record"
+    confidence:
+      type: "number"
+      minimum: 0.0
+      maximum: 1.0
+      description: "Confidence score for the classification"
+    reasoning:
+      type: "string"
+      description: "Detailed explanation for the classification decision"
+    pii_detected:
+      type: "boolean"
+      description: "Whether PII or sensitive information was detected"
+    pii_details:
+      type: "array"
+      items:
+        type: "object"
+        properties:
+          type:
+            type: "string"
+            description: "Type of PII detected"
+          value:
+            type: "string"
+            description: "The PII value found"
+          location:
+            type: "string"
+            description: "Where in the data the PII was found"
+      description: "Details of any PII detected (if pii_detected is true)"
+    requires_human_review:
+      type: "boolean"
+      description: "Whether this classification requires human review"
+  required:
+    - category
+    - confidence
+    - reasoning
+    - pii_detected
+    - requires_human_review
