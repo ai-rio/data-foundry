@@ -1,0 +1,24 @@
+# Data Foundry Development Dependencies
+# Additional packages for development and testing
+
+# Testing Framework
+pytest>=9.0.2
+pytest-asyncio>=1.3.0
+pytest-cov>=7.0.0
+
+# API Testing
+httpx>=0.25.0
+
+# Code Quality & Formatting
+ruff>=0.14.10
+typer>=0.19.2
+black>=25.12.0
+isort>=5.13.2
+mypy>=1.19.1
+mypy-extensions>=1.1.0
+pre-commit>=3.5.0
+
+# spaCy Models (for development)
+# Note: These are downloaded automatically by Presidio but can be installed explicitly
+# en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0.tar.gz
+# en-core-web-lg @ https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0.tar.gz
