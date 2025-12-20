@@ -21,23 +21,70 @@ Data Foundry is a comprehensive **Enrichment-as-a-Service** platform that transf
 
 ## 🏗️ Architecture Overview
 
-```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Client Apps   │───▶│   FastAPI API   │───▶│   PostgreSQL    │
-│                 │    │                 │    │   (Multi-tenant) │
-│ - Web Apps       │    │ - Auth & AuthZ  │    │   - RLS         │
-│ - Mobile Apps    │    │ - Rate Limiting │    │   - Audit Logs  │
-│ - API Clients    │    │ - Request Logs  │    │                 │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-                               │                       │
-                               ▼                       ▼
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Label Studio  │    │   Prefect       │    │      Redis      │
-│                 │    │                 │    │                 │
-│ - Human Review  │    │ - Orchestration │    │ - Caching       │
-│ - Annotation UI │    │ - Workflows     │    │ - Queue         │
-│ - Project Mgmt  │    │ - Monitoring    │    │ - Session Store │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
+```mermaid
+graph TB
+    subgraph "Client Layer"
+        A[Web Apps]
+        B[Mobile Apps]
+        C[API Clients]
+    end
+
+    subgraph "API Gateway"
+        D[FastAPI API]
+        E[Auth & AuthZ]
+        F[Rate Limiting]
+        G[Request Logs]
+    end
+
+    subgraph "Core Services"
+        H[PostgreSQL<br/><i>Multi-tenant</i>]
+        I[Row-Level Security<br/><i>RLS</i>]
+        J[Audit Logs]
+    end
+
+    subgraph "Supporting Services"
+        K[Label Studio<br/><i>Human Review</i>]
+        L[Annotation UI]
+        M[Project Management]
+        N[Prefect<br/><i>Orchestration</i>]
+        O[Workflows]
+        P[Monitoring]
+        Q[Redis<br/><i>Caching & Queue</i>]
+        R[Session Store]
+    end
+
+    A --> D
+    B --> D
+    C --> D
+
+    D --> E
+    D --> F
+    D --> G
+
+    E --> H
+    F --> H
+    G --> H
+
+    H --> I
+    H --> J
+
+    D --> K
+    D --> N
+    D --> Q
+
+    K --> L
+    K --> M
+
+    N --> O
+    N --> P
+
+    Q --> R
+
+    style D fill:#e1f5fe
+    style H fill:#f3e5f5
+    style K fill:#fff3e0
+    style N fill:#e8f5e9
+    style Q fill:#fce4ec
 ```
 
 ## 🛠️ Technology Stack
