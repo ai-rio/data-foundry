@@ -4,12 +4,12 @@ Based on patterns from tiangolo/full-stack-fastapi-template
 """
 
 from datetime import datetime, timedelta
-from typing import Any, Union, Optional
+from typing import Any
+
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import jwt
 from passlib.context import CryptContext
-from sqlalchemy.orm import Session
-from fastapi import HTTPException, status, Depends
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from src.core.config import settings
 
@@ -21,8 +21,7 @@ security = HTTPBearer()
 
 
 def create_access_token(
-    subject: Union[str, Any],
-    expires_delta: Optional[timedelta] = None
+    subject: str | Any, expires_delta: timedelta | None = None
 ) -> str:
     """
     Create a JWT access token.
@@ -43,9 +42,7 @@ def create_access_token(
 
     to_encode = {"exp": expire, "sub": str(subject)}
     encoded_jwt = jwt.encode(
-        to_encode,
-        settings.SECRET_KEY,
-        algorithm=settings.ALGORITHM
+        to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM
     )
     return encoded_jwt
 
@@ -65,9 +62,7 @@ def verify_token(token: str) -> dict:
     """
     try:
         payload = jwt.decode(
-            token,
-            settings.SECRET_KEY,
-            algorithms=[settings.ALGORITHM]
+            token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
         )
         return payload
     except jwt.ExpiredSignatureError:
@@ -112,7 +107,7 @@ def get_password_hash(password: str) -> str:
 
 
 async def get_current_user_token(
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+    credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> dict:
     """
     Dependency to get current user from JWT token.
@@ -145,7 +140,7 @@ async def get_current_user_token(
         "user_id": user_id,
         "tenant_id": tenant_id,
         "exp": payload.get("exp"),
-        "token": token
+        "token": token,
     }
 
 
@@ -154,18 +149,20 @@ def require_tenant_id():
     """
     Decorator to ensure tenant_id is present in token.
     """
+
     def dependency(current_user: dict = Depends(get_current_user_token)):
         if not current_user.get("tenant_id"):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Tenant ID required for this operation"
+                detail="Tenant ID required for this operation",
             )
         return current_user
+
     return dependency
 
 
 # API Key authentication (for service-to-service communication)
-def verify_api_key(api_key: str, tenant_id: Optional[str] = None) -> bool:
+def verify_api_key(api_key: str, tenant_id: str | None = None) -> bool:
     """
     Verify API key for service authentication.
 
@@ -201,13 +198,11 @@ def create_tenant_token(tenant_id: str, user_id: str) -> str:
         "exp": expire,
         "sub": user_id,
         "tenant_id": tenant_id,
-        "type": "tenant_access"
+        "type": "tenant_access",
     }
 
     encoded_jwt = jwt.encode(
-        to_encode,
-        settings.SECRET_KEY,
-        algorithm=settings.ALGORITHM
+        to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM
     )
     return encoded_jwt
 
@@ -229,13 +224,11 @@ def create_service_token(service_name: str) -> str:
         "exp": expire,
         "sub": service_name,
         "type": "service_access",
-        "service": service_name
+        "service": service_name,
     }
 
     encoded_jwt = jwt.encode(
-        to_encode,
-        settings.SECRET_KEY,
-        algorithm=settings.ALGORITHM
+        to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM
     )
     return encoded_jwt
 

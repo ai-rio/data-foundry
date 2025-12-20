@@ -5,10 +5,9 @@ This module manages all external service connections and application settings.
 It serves as the central configuration hub for the entire platform.
 """
 
-from pydantic_settings import BaseSettings
-from typing import Optional, List
-import os
 from functools import lru_cache
+
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
@@ -26,10 +25,12 @@ class Settings(BaseSettings):
 
     # API Settings
     API_V1_STR: str = "/api/v1"
-    CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8080"]
+    CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:8080"]
 
     # Database Configuration
-    DATABASE_URL: str = "postgresql://foundry_user:foundry_password@localhost:5432/data_foundry"
+    DATABASE_URL: str = (
+        "postgresql://foundry_user:foundry_password@localhost:5432/data_foundry"
+    )
     DATABASE_POOL_SIZE: int = 10
     DATABASE_MAX_OVERFLOW: int = 20
 
@@ -38,27 +39,27 @@ class Settings(BaseSettings):
     REDIS_TASK_QUEUE_NAME: str = "data_foundry_tasks"
 
     # AI Model Configuration
-    OPENAI_API_KEY: Optional[str] = None
+    OPENAI_API_KEY: str | None = None
     OPENAI_MODEL: str = "gpt-4o"
     OPENAI_TEMPERATURE: float = 0.3
     OPENAI_MAX_TOKENS: int = 2048
 
-    ANTHROPIC_API_KEY: Optional[str] = None
+    ANTHROPIC_API_KEY: str | None = None
     ANTHROPIC_MODEL: str = "claude-3-opus-20240229"
     ANTHROPIC_TEMPERATURE: float = 0.3
     ANTHROPIC_MAX_TOKENS: int = 2048
 
     # Label Studio Configuration
     LABEL_STUDIO_URL: str = "http://localhost:8080"
-    LABEL_STUDIO_API_KEY: Optional[str] = None
+    LABEL_STUDIO_API_KEY: str | None = None
     LABEL_STUDIO_PROJECT_ID: int = 1
 
     # Stripe Configuration
-    STRIPE_SECRET_KEY: Optional[str] = None
-    STRIPE_PUBLISHABLE_KEY: Optional[str] = None
-    STRIPE_WEBHOOK_SECRET: Optional[str] = None
-    STRIPE_AI_LABEL_METER_ID: Optional[str] = None
-    STRIPE_HUMAN_AUDIT_METER_ID: Optional[str] = None
+    STRIPE_SECRET_KEY: str | None = None
+    STRIPE_PUBLISHABLE_KEY: str | None = None
+    STRIPE_WEBHOOK_SECRET: str | None = None
+    STRIPE_AI_LABEL_METER_ID: str | None = None
+    STRIPE_HUMAN_AUDIT_METER_ID: str | None = None
 
     # Security Settings
     ALGORITHM: str = "HS256"
@@ -67,7 +68,7 @@ class Settings(BaseSettings):
 
     # File Upload Settings
     MAX_FILE_SIZE_MB: int = 100
-    ALLOWED_FILE_TYPES: List[str] = ["csv", "json", "xlsx", "parquet"]
+    ALLOWED_FILE_TYPES: list[str] = ["csv", "json", "xlsx", "parquet"]
 
     # Task Configuration
     TASK_TIMEOUT_SECONDS: int = 3600  # 1 hour
@@ -111,7 +112,7 @@ class Settings(BaseSettings):
         return self.DATABASE_URL
 
 
-@lru_cache()
+@lru_cache
 def get_settings() -> Settings:
     """
     Get cached settings instance.
@@ -145,5 +146,5 @@ AI_PROVIDERS = {
         "model": settings.ANTHROPIC_MODEL,
         "temperature": settings.ANTHROPIC_TEMPERATURE,
         "max_tokens": settings.ANTHROPIC_MAX_TOKENS,
-    }
+    },
 }

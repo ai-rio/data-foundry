@@ -5,18 +5,17 @@ This demonstrates the "Glue" integration between Prefect and dlt
 
 import asyncio
 from datetime import datetime
-from typing import Dict, Any, List
-import pandas as pd
+from typing import Any
 
-from prefect import flow, task, get_run_logger
-from dlt import pipeline, sources
+from dlt import pipeline
 from dlt.destinations import postgres
+from prefect import flow, get_run_logger, task
 
 from src.core.config import settings
 
 
 @task
-def extract_data(data_source: str) -> List[Dict[str, Any]]:
+def extract_data(data_source: str) -> list[dict[str, Any]]:
     """
     Extract data from source (simulated).
     In production, this would connect to various data sources.
@@ -32,7 +31,7 @@ def extract_data(data_source: str) -> List[Dict[str, Any]]:
             "email": "john@example.com",
             "phone": "555-1234",
             "tenant_id": "tenant_001",
-            "created_at": datetime.utcnow().isoformat()
+            "created_at": datetime.utcnow().isoformat(),
         },
         {
             "id": 2,
@@ -40,7 +39,7 @@ def extract_data(data_source: str) -> List[Dict[str, Any]]:
             "email": "jane@example.com",
             "phone": "555-5678",
             "tenant_id": "tenant_001",
-            "created_at": datetime.utcnow().isoformat()
+            "created_at": datetime.utcnow().isoformat(),
         },
         {
             "id": 3,
@@ -48,8 +47,8 @@ def extract_data(data_source: str) -> List[Dict[str, Any]]:
             "email": "bob@example.com",
             "phone": "555-9876",
             "tenant_id": "tenant_002",
-            "created_at": datetime.utcnow().isoformat()
-        }
+            "created_at": datetime.utcnow().isoformat(),
+        },
     ]
 
     logger.info(f"Extracted {len(sample_data)} records")
@@ -57,7 +56,7 @@ def extract_data(data_source: str) -> List[Dict[str, Any]]:
 
 
 @task
-def apply_pii_redaction(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def apply_pii_redaction(data: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
     Apply PII redaction using Microsoft Presidio.
     """
@@ -81,16 +80,12 @@ def apply_pii_redaction(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             for field in text_fields:
                 if field in record:
                     # Analyze the text
-                    results = analyzer.analyze(
-                        text=record[field],
-                        language="en"
-                    )
+                    results = analyzer.analyze(text=record[field], language="en")
 
                     # Anonymize if PII detected
                     if results:
                         anonymized = anonymizer.anonymize(
-                            text=record[field],
-                            analyzer_results=results
+                            text=record[field], analyzer_results=results
                         )
                         redacted_record[field] = anonymized.text
 
@@ -105,7 +100,7 @@ def apply_pii_redaction(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 @task
-def apply_ai_labeling(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def apply_ai_labeling(data: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
     Apply AI labeling using OpenAI API.
     """
@@ -122,9 +117,9 @@ def apply_ai_labeling(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             # Create labeling prompt
             prompt = f"""
             Analyze this record and assign labels:
-            Name: {record.get('name', 'N/A')}
-            Email: {record.get('email', 'N/A')}
-            Phone: {record.get('phone', 'N/A')}
+            Name: {record.get("name", "N/A")}
+            Email: {record.get("email", "N/A")}
+            Phone: {record.get("phone", "N/A")}
 
             Assign one of these categories:
             - 'high_value' (appears to be enterprise/corporate)
@@ -141,25 +136,28 @@ def apply_ai_labeling(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 model=settings.OPENAI_MODEL,
                 messages=[
                     {"role": "system", "content": "You are a data labeling expert."},
-                    {"role": "user", "content": prompt}
+                    {"role": "user", "content": prompt},
                 ],
                 temperature=settings.OPENAI_TEMPERATURE,
-                max_tokens=200
+                max_tokens=200,
             )
 
             # Parse response
             import json
+
             ai_result = json.loads(response.choices[0].message.content)
 
             # Add AI results to record
             labeled_record = record.copy()
-            labeled_record.update({
-                "ai_category": ai_result.get("category"),
-                "ai_confidence": ai_result.get("confidence"),
-                "ai_reasoning": ai_result.get("reasoning"),
-                "ai_model": settings.OPENAI_MODEL,
-                "ai_processed_at": datetime.utcnow().isoformat()
-            })
+            labeled_record.update(
+                {
+                    "ai_category": ai_result.get("category"),
+                    "ai_confidence": ai_result.get("confidence"),
+                    "ai_reasoning": ai_result.get("reasoning"),
+                    "ai_model": settings.OPENAI_MODEL,
+                    "ai_processed_at": datetime.utcnow().isoformat(),
+                }
+            )
 
             labeled_data.append(labeled_record)
 
@@ -175,7 +173,7 @@ def apply_ai_labeling(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 @task
-def route_for_human_review(data: List[Dict[str, Any]]) -> tuple[List[Dict], List[Dict]]:
+def route_for_human_review(data: list[dict[str, Any]]) -> tuple[list[dict], list[dict]]:
     """
     Route records based on confidence scores.
     Low confidence records go to Label Studio.
@@ -191,17 +189,23 @@ def route_for_human_review(data: List[Dict[str, Any]]) -> tuple[List[Dict], List
 
         if confidence < settings.CONFIDENCE_THRESHOLD:
             human_review.append(record)
-            logger.info(f"Record {record['id']} routed for human review (confidence: {confidence})")
+            logger.info(
+                f"Record {record['id']} routed for human review (confidence: {confidence})"
+            )
         else:
             auto_approved.append(record)
-            logger.info(f"Record {record['id']} auto-approved (confidence: {confidence})")
+            logger.info(
+                f"Record {record['id']} auto-approved (confidence: {confidence})"
+            )
 
-    logger.info(f"Auto-approved: {len(auto_approved)}, Human review: {len(human_review)}")
+    logger.info(
+        f"Auto-approved: {len(auto_approved)}, Human review: {len(human_review)}"
+    )
     return auto_approved, human_review
 
 
 @task
-def send_to_label_studio(data: List[Dict[str, Any]]) -> bool:
+def send_to_label_studio(data: list[dict[str, Any]]) -> bool:
     """
     Send low-confidence records to Label Studio for human review.
     """
@@ -213,8 +217,7 @@ def send_to_label_studio(data: List[Dict[str, Any]]) -> bool:
 
         # Connect to Label Studio
         ls = Client(
-            url=settings.LABEL_STUDIO_URL,
-            api_key=settings.LABEL_STUDIO_API_KEY
+            url=settings.LABEL_STUDIO_URL, api_key=settings.LABEL_STUDIO_API_KEY
         )
 
         # Get or create project
@@ -229,7 +232,7 @@ def send_to_label_studio(data: List[Dict[str, Any]]) -> bool:
                     "original_data": record,
                     "ai_category": record.get("ai_category"),
                     "ai_confidence": record.get("ai_confidence"),
-                    "ai_reasoning": record.get("ai_reasoning")
+                    "ai_reasoning": record.get("ai_reasoning"),
                 }
             }
             tasks.append(task_data)
@@ -247,7 +250,9 @@ def send_to_label_studio(data: List[Dict[str, Any]]) -> bool:
 
 
 @task
-def save_to_database(data: List[Dict[str, Any]], table_name: str = "processed_data") -> bool:
+def save_to_database(
+    data: list[dict[str, Any]], table_name: str = "processed_data"
+) -> bool:
     """
     Save processed data to PostgreSQL using dlt.
     """
@@ -259,7 +264,7 @@ def save_to_database(data: List[Dict[str, Any]], table_name: str = "processed_da
         pipeline_obj = pipeline(
             pipeline_name="data_foundry_ingestion",
             destination=postgres(settings.DATABASE_URL_SYNC),
-            dataset_name="public"
+            dataset_name="public",
         )
 
         # Create a simple source
@@ -284,7 +289,7 @@ async def data_ingestion_flow(
     data_source: str = "sample_data",
     enable_ai_labeling: bool = True,
     enable_pii_redaction: bool = True,
-    enable_human_review: bool = True
+    enable_human_review: bool = True,
 ):
     """
     Main ingestion flow that orchestrates the entire data processing pipeline.
@@ -339,7 +344,7 @@ async def data_ingestion_flow(
             "total_records": len(raw_data),
             "auto_approved": len(auto_approved),
             "human_review": len(human_review),
-            "success": True
+            "success": True,
         }
 
     except Exception as e:
@@ -354,6 +359,6 @@ if __name__ == "__main__":
             data_source="sample_data",
             enable_ai_labeling=False,  # Disable AI for testing without API keys
             enable_pii_redaction=False,  # Disable PII for testing
-            enable_human_review=False
+            enable_human_review=False,
         )
     )

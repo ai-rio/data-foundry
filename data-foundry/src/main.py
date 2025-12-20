@@ -2,17 +2,18 @@
 Main FastAPI application for Data Foundry
 """
 
-from fastapi import FastAPI, HTTPException, Depends, status
-from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-import uvicorn
 
-from src.core.config import settings
+import uvicorn
+from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
+
 from src.app.middleware import (
-    TenantContextMiddleware,
+    RequestLoggingMiddleware,
     SecurityHeadersMiddleware,
-    RequestLoggingMiddleware
+    TenantContextMiddleware,
 )
+from src.core.config import settings
 from src.core.security import get_current_user_token
 from src.tasks.ingestion import data_ingestion_flow
 
@@ -22,9 +23,9 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager."""
     # Startup
     print("🚀 Data Foundry is starting up...")
-    print(f"📊 API Documentation: http://localhost:8000/docs")
-    print(f"🏷️  Label Studio: http://localhost:8080")
-    print(f"🔧 Prefect Dashboard: http://localhost:4200")
+    print("📊 API Documentation: http://localhost:8000/docs")
+    print("🏷️  Label Studio: http://localhost:8080")
+    print("🔧 Prefect Dashboard: http://localhost:4200")
 
     yield
 
@@ -40,7 +41,7 @@ app = FastAPI(
     openapi_url=f"{settings.API_V1_STR}/openapi.json",
     docs_url="/docs",
     redoc_url="/redoc",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 # Add CORS middleware
@@ -66,7 +67,7 @@ async def health_check():
         "status": "healthy",
         "service": settings.APP_NAME,
         "version": settings.APP_VERSION,
-        "environment": settings.ENVIRONMENT
+        "environment": settings.ENVIRONMENT,
     }
 
 
@@ -79,7 +80,7 @@ async def root():
         "description": "Enrichment-as-a-Service (EaaS) platform",
         "version": settings.APP_VERSION,
         "docs": "/docs",
-        "health": "/health"
+        "health": "/health",
     }
 
 
@@ -90,7 +91,7 @@ async def get_current_user(current_user: dict = Depends(get_current_user_token))
     return {
         "user_id": current_user.get("user_id"),
         "tenant_id": current_user.get("tenant_id"),
-        "token_type": "bearer"
+        "token_type": "bearer",
     }
 
 
@@ -101,7 +102,7 @@ async def trigger_ingestion(
     enable_ai: bool = True,
     enable_pii: bool = True,
     enable_human_review: bool = True,
-    current_user: dict = Depends(get_current_user_token)
+    current_user: dict = Depends(get_current_user_token),
 ):
     """
     Trigger the data ingestion pipeline.
@@ -114,7 +115,7 @@ async def trigger_ingestion(
             data_source=data_source,
             enable_ai_labeling=enable_ai,
             enable_pii_redaction=enable_pii,
-            enable_human_review=enable_human_review
+            enable_human_review=enable_human_review,
         )
 
         return {
@@ -126,14 +127,14 @@ async def trigger_ingestion(
                 "data_source": data_source,
                 "enable_ai": enable_ai,
                 "enable_pii": enable_pii,
-                "enable_human_review": enable_human_review
-            }
+                "enable_human_review": enable_human_review,
+            },
         }
 
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to start ingestion flow: {str(e)}"
+            detail=f"Failed to start ingestion flow: {str(e)}",
         )
 
 
@@ -146,39 +147,43 @@ async def get_system_info():
             "name": settings.APP_NAME,
             "version": settings.APP_VERSION,
             "environment": settings.ENVIRONMENT,
-            "debug": settings.DEBUG
+            "debug": settings.DEBUG,
         },
         "services": {
             "database": {
-                "url": settings.DATABASE_URL.split("@")[1] if "@" in settings.DATABASE_URL else "configured",
-                "pool_size": settings.DATABASE_POOL_SIZE
+                "url": (
+                    settings.DATABASE_URL.split("@")[1]
+                    if "@" in settings.DATABASE_URL
+                    else "configured"
+                ),
+                "pool_size": settings.DATABASE_POOL_SIZE,
             },
             "redis": {
-                "url": settings.REDIS_URL.split("@")[1] if "@" in settings.REDIS_URL else "configured"
+                "url": (
+                    settings.REDIS_URL.split("@")[1]
+                    if "@" in settings.REDIS_URL
+                    else "configured"
+                )
             },
-            "label_studio": {
-                "url": settings.LABEL_STUDIO_URL
-            },
+            "label_studio": {"url": settings.LABEL_STUDIO_URL},
             "ai_providers": {
                 "openai": {
                     "model": settings.OPENAI_MODEL,
-                    "configured": bool(settings.OPENAI_API_KEY)
+                    "configured": bool(settings.OPENAI_API_KEY),
                 },
                 "anthropic": {
                     "model": settings.ANTHROPIC_MODEL,
-                    "configured": bool(settings.ANTHROPIC_API_KEY)
-                }
+                    "configured": bool(settings.ANTHROPIC_API_KEY),
+                },
             },
-            "stripe": {
-                "configured": bool(settings.STRIPE_SECRET_KEY)
-            }
+            "stripe": {"configured": bool(settings.STRIPE_SECRET_KEY)},
         },
         "features": {
             "pii_redaction": settings.ENABLE_PII_REDACTION,
             "confidence_threshold": settings.CONFIDENCE_THRESHOLD,
             "max_file_size_mb": settings.MAX_FILE_SIZE_MB,
-            "allowed_file_types": settings.ALLOWED_FILE_TYPES
-        }
+            "allowed_file_types": settings.ALLOWED_FILE_TYPES,
+        },
     }
 
 
@@ -190,7 +195,7 @@ async def http_exception_handler(request, exc):
         "error": {
             "type": "http_error",
             "status_code": exc.status_code,
-            "detail": exc.detail
+            "detail": exc.detail,
         }
     }
 
@@ -199,13 +204,14 @@ async def http_exception_handler(request, exc):
 async def general_exception_handler(request, exc):
     """Handle general exceptions."""
     import logging
+
     logger = logging.getLogger("data_foundry")
     logger.error(f"Unhandled exception: {str(exc)}", exc_info=True)
 
     return {
         "error": {
             "type": "internal_server_error",
-            "detail": "An internal error occurred"
+            "detail": "An internal error occurred",
         }
     }
 
@@ -217,5 +223,5 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=8000,
         reload=settings.DEBUG,
-        log_level=settings.LOG_LEVEL.lower()
+        log_level=settings.LOG_LEVEL.lower(),
     )

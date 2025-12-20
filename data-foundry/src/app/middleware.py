@@ -2,13 +2,11 @@
 Middleware for Data Foundry application
 """
 
-from fastapi import Request, HTTPException, status
+from fastapi import HTTPException, Request, status
 from starlette.middleware.base import BaseHTTPMiddleware
-from sqlalchemy.orm import Session
-from typing import Optional
 
-from src.core.security import verify_token
 from src.core.config import settings
+from src.core.security import verify_token
 
 
 class TenantContextMiddleware(BaseHTTPMiddleware):
@@ -59,7 +57,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if not self._is_allowed(client_id):
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Rate limit exceeded"
+                detail="Rate limit exceeded",
             )
 
         # Continue processing
@@ -69,7 +67,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     def _get_client_id(self, request: Request) -> str:
         """Get client identifier for rate limiting."""
         # Try to get tenant ID first, then fall back to IP
-        if hasattr(request.state, 'tenant_id') and request.state.tenant_id:
+        if hasattr(request.state, "tenant_id") and request.state.tenant_id:
             return f"tenant_{request.state.tenant_id}"
 
         # Get IP address
@@ -88,7 +86,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # Clean old entries
         cutoff = now - self.period
         self.clients[client_id] = [
-            timestamp for timestamp in self.clients.get(client_id, [])
+            timestamp
+            for timestamp in self.clients.get(client_id, [])
             if timestamp > cutoff
         ]
 
@@ -112,7 +111,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["X-XSS-Protection"] = "1; mode=block"
-        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        response.headers["Strict-Transport-Security"] = (
+            "max-age=31536000; includeSubDomains"
+        )
 
         # Remove server header for security
         if "server" in response.headers:
@@ -127,8 +128,8 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next):
-        import time
         import logging
+        import time
 
         logger = logging.getLogger("data_foundry.requests")
 
@@ -141,9 +142,9 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                 "method": request.method,
                 "url": str(request.url),
                 "client_ip": request.client.host,
-                "tenant_id": getattr(request.state, 'tenant_id', None),
+                "tenant_id": getattr(request.state, "tenant_id", None),
                 "user_agent": request.headers.get("User-Agent"),
-            }
+            },
         )
 
         # Process request
@@ -161,8 +162,8 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                     "url": str(request.url),
                     "status_code": response.status_code,
                     "duration_ms": round(duration * 1000, 2),
-                    "tenant_id": getattr(request.state, 'tenant_id', None),
-                }
+                    "tenant_id": getattr(request.state, "tenant_id", None),
+                },
             )
 
             return response
@@ -177,9 +178,9 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                     "url": str(request.url),
                     "duration_ms": round(duration * 1000, 2),
                     "error": str(e),
-                    "tenant_id": getattr(request.state, 'tenant_id', None),
+                    "tenant_id": getattr(request.state, "tenant_id", None),
                 },
-                exc_info=True
+                exc_info=True,
             )
             raise
 
@@ -202,8 +203,12 @@ class CORSMiddleware(BaseHTTPMiddleware):
         if origin and self._is_origin_allowed(origin):
             response.headers["Access-Control-Allow-Origin"] = origin
             response.headers["Access-Control-Allow-Credentials"] = "true"
-            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-            response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, X-Tenant-ID"
+            response.headers["Access-Control-Allow-Methods"] = (
+                "GET, POST, PUT, DELETE, OPTIONS"
+            )
+            response.headers["Access-Control-Allow-Headers"] = (
+                "Authorization, Content-Type, X-Tenant-ID"
+            )
 
         return response
 
