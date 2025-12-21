@@ -1,6 +1,8 @@
+# Phase 6.5 Load Testing Docker Compose
+# Adds k6 service to existing stack for integrated testing
 
 services:
-  # The Database: PostgreSQL with Row-Level Security for Multi-Tenancy
+  # Existing services from main docker-compose.yml
   db:
     image: postgres:15-alpine
     container_name: data_foundry_db
@@ -19,7 +21,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # The Human-in-the-Loop UI
   label-studio:
     image: heartexlabs/label-studio:latest
     container_name: data_foundry_label_studio
@@ -31,13 +32,10 @@ services:
       - DJANGO_DB=sqlite
       - LABEL_STUDIO_USERNAME=admin@datafoundry.com
       - LABEL_STUDIO_PASSWORD=admin123
-    # SQLite will be used for simpler setup
-    # In production, can migrate to PostgreSQL later
     depends_on:
       db:
         condition: service_healthy
 
-  # The Task Queue Broker
   redis:
     image: redis:7-alpine
     container_name: data_foundry_redis
@@ -51,7 +49,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # Prefect Server for Workflow Orchestration
   prefect-server:
     image: prefecthq/prefect:2-latest
     container_name: data_foundry_prefect_server
@@ -67,7 +64,20 @@ services:
     volumes:
       - prefect_data:/root/.prefect
 
-  # The Main FastAPI Application
+  prefect-agent:
+    image: prefecthq/prefect:2-python3.11
+    container_name: data_foundry_prefect_agent
+    command: prefect agent start --pool default-agent-pool
+    environment:
+      - PREFECT_API_URL=http://prefect-server:4200/api
+    depends_on:
+      - prefect-server
+      - redis
+    volumes:
+      - prefect_data:/root/.prefect
+      - ./src:/app/src
+
+  # Main API Service
   api:
     build:
       context: .
@@ -100,19 +110,23 @@ services:
       retries: 3
       start_period: 40s
 
-  # Optional: Prefect Agent for Task Execution
-  prefect-agent:
-    image: prefecthq/prefect:2-python3.11
-    container_name: data_foundry_prefect_agent
-    command: prefect agent start --pool default-agent-pool
+  # NEW: K6 Load Testing Service
+  k6:
+    image: grafana/k6:latest
+    container_name: data_foundry_k6
     environment:
-      - PREFECT_API_URL=http://prefect-server:4200/api
-    depends_on:
-      - prefect-server
-      - redis
+      - BASE_URL=http://api:8000
+      - API_TOKEN=${API_TOKEN:-}
     volumes:
-      - prefect_data:/root/.prefect
-      - ./src:/app/src
+      - ./tests:/tests
+      - ./results:/results
+    depends_on:
+      api:
+        condition: service_healthy
+    profiles:
+      - loadtest
+    command: run --out json=/results/ramp-up.json tests/load/k6-ramp-up.js
+    restart: "no"
 
 volumes:
   postgres_data:
