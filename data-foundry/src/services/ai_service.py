@@ -9,7 +9,7 @@ import json
 import logging
 import asyncio
 import hashlib
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, AsyncGenerator, Union
 from decimal import Decimal
 import time
@@ -140,8 +140,8 @@ class AIResponse:
         self.fallback_used = fallback_used
         self.retry_count = retry_count
         self.request_id = request_id
-        self.created_at = datetime.utcnow()
-        self.cached_at = datetime.utcnow() if from_cache else None
+        self.created_at = datetime.now(timezone.utc)
+        self.cached_at = datetime.now(timezone.utc) if from_cache else None
 
 
 class AIService:

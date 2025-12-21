@@ -6,10 +6,11 @@ tenant organizations. It handles authentication, authorization, permissions,
 and user-specific settings.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional, Dict, Any, List
 
+from pydantic import field_validator, model_validator
 from sqlalchemy import JSON, Column, Index
 from sqlmodel import Field, SQLModel
 
@@ -154,6 +155,48 @@ class User(SQLModel, table=True):
     invitation_expires_at: Optional[datetime] = Field(description="Invitation expiration")
     notes: Optional[str] = Field(description="Admin notes about user")
 
+    @model_validator(mode='after')
+    def set_role_based_permissions(self):
+        """Set permission flags based on user role."""
+        if self.role == UserRole.ADMIN:
+            # Admin gets all permissions
+            self.can_create_data = True
+            self.can_modify_data = True
+            self.can_delete_data = True
+            self.can_manage_users = True
+            self.can_view_billing = True
+            self.can_manage_billing = True
+            self.can_export_data = True
+        elif self.role == UserRole.MANAGER:
+            # Manager gets most permissions except billing management
+            self.can_create_data = True
+            self.can_modify_data = True
+            self.can_delete_data = True
+            self.can_manage_users = True
+            self.can_view_billing = True
+            self.can_manage_billing = False  # Managers can't manage billing
+            self.can_export_data = True
+        elif self.role == UserRole.ANALYST:
+            # Analyst can create and modify but not delete
+            self.can_create_data = True
+            self.can_modify_data = True
+            self.can_delete_data = False
+            self.can_manage_users = False
+            self.can_view_billing = False
+            self.can_manage_billing = False
+            self.can_export_data = True
+        elif self.role == UserRole.VIEWER:
+            # Viewer only gets view permissions
+            self.can_create_data = False
+            self.can_modify_data = False
+            self.can_delete_data = False
+            self.can_manage_users = False
+            self.can_view_billing = False
+            self.can_manage_billing = False
+            self.can_export_data = False  # Viewers can't export
+
+        return self
+
     class Config:
         """Pydantic configuration."""
         use_enum_values = True
@@ -198,7 +241,7 @@ class User(SQLModel, table=True):
         if not self.password_changed_at:
             return True
         # Require password change every 90 days
-        days_since_change = (datetime.utcnow() - self.password_changed_at).days
+        days_since_change = (datetime.now(timezone.utc) - self.password_changed_at).days
         return days_since_change > 90
 
     @property

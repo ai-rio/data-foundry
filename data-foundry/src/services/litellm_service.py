@@ -14,7 +14,7 @@ import asyncio
 import json
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, AsyncGenerator, Union
 from decimal import Decimal
 import hashlib
@@ -77,7 +77,7 @@ class LiteLLMResponse:
         self.cached = cached
         self.fallback_used = fallback_used
         self.retry_count = retry_count
-        self.timestamp = datetime.utcnow()
+        self.timestamp = datetime.now(timezone.utc)
 
 
 class LiteLLMService:
@@ -93,6 +93,9 @@ class LiteLLMService:
         self.primary_model = settings.PRIMARY_MODEL
         self.fallback_models = settings.FALLBACK_MODELS
         self.all_models = [self.primary_model] + self.fallback_models
+
+        # In-memory request cache for cache detection
+        self._request_cache = {}
 
         # Provider mappings
         self._provider_mappings = {
@@ -157,28 +160,40 @@ class LiteLLMService:
     def _configure_litellm(self):
         """Configure LiteLLM settings."""
         litellm.set_verbose = settings.LITELLM_LOGGING
+
         # Enable LiteLLM built-in caching with Redis support
-        litellm.cache = Cache(type="redis",
-                             host="localhost",
-                             port=6379,
-                             db=0)
+        try:
+            litellm.cache = Cache(
+                type="redis",
+                host="localhost",
+                port=6379,
+                db=0,
+                supported_call_types=["acompletion", "completion"]
+            )
+            logger.info("LiteLLM Redis cache initialized successfully")
+        except Exception as e:
+            logger.warning(f"Failed to initialize Redis cache, falling back to local cache: {e}")
+            litellm.cache = Cache(type="local")
+
         litellm.request_timeout = settings.LITELLM_REQUEST_TIMEOUT
+
         # Enable debug logging to see cache behavior
-        litellm._turn_on_debug()
+        if settings.LITELLM_LOGGING:
+            litellm._turn_on_debug()
 
-        # Set API keys from environment
-        if settings.OPENAI_API_KEY:
-            litellm.openai_api_key = settings.OPENAI_API_KEY
+        # Set API keys securely through SecretManager
+        if settings.secure_openai_api_key:
+            litellm.openai_api_key = settings.secure_openai_api_key
 
-        if settings.ANTHROPIC_API_KEY:
-            litellm.anthropic_api_key = settings.ANTHROPIC_API_KEY
+        if settings.secure_anthropic_api_key:
+            litellm.anthropic_api_key = settings.secure_anthropic_api_key
 
         # Configure OpenRouter
-        if settings.OPENROUTER_API_KEY:
-            litellm.openrouter_api_key = settings.OPENROUTER_API_KEY
+        if settings.secure_openrouter_api_key:
+            litellm.openrouter_api_key = settings.secure_openrouter_api_key
             # OpenRouter uses OpenAI-compatible format, set as fallback
-            if not settings.OPENAI_API_KEY:
-                litellm.openai_api_key = settings.OPENROUTER_API_KEY
+            if not settings.secure_openai_api_key:
+                litellm.openai_api_key = settings.secure_openrouter_api_key
 
         logger.info("LiteLLM configured successfully")
 
@@ -255,6 +270,7 @@ class LiteLLMService:
             use_cache: Whether to use cached responses
             cache_ttl: Cache time-to-live in seconds
             max_retries: Override default retry count
+            fallbacks: List of fallback models
 
         Returns:
             LiteLLMResponse: The completion response with metadata
@@ -268,6 +284,13 @@ class LiteLLMService:
 
         # Update metrics
         self._metrics["requests_total"] += 1
+
+        # Store the request hash for cache detection
+        request_hash = self._generate_request_hash(model, messages, temperature, max_tokens) if not messages else self._generate_request_hash(model, self._prepare_messages(prompt, system_prompt, None), temperature, max_tokens)
+
+        # Check if we've seen this request before (for cache detection)
+        seen_before = request_hash in self._request_cache
+        self._request_cache[request_hash] = time.time()
 
         try:
             # Prepare messages
@@ -287,9 +310,16 @@ class LiteLLMService:
                 tenant_id=tenant_id,
                 max_retries=max_retries,
                 metadata=metadata,
-                use_cache=use_cache and not stream,  # Pass caching flag
-                fallbacks=fallbacks  # Pass custom fallbacks
+                use_cache=use_cache,  # Pass through cache setting to LiteLLM
+                fallbacks=fallbacks
             )
+
+            # Heuristic: if we've seen this request before and response time is very fast, it's likely cached
+            response_time = time.time() - start_time
+            if seen_before and use_cache and response_time < 0.5:  # Less than 500ms suggests cache hit
+                response.cached = True
+                self._metrics["cache_hits"] += 1
+                logger.info(f"Heuristic cache hit detected for request {request_hash[:8]}")
 
             # Update metrics
             self._metrics["requests_success"] += 1
@@ -351,8 +381,11 @@ class LiteLLMService:
                         "model": attempt_model,
                         "messages": messages,
                         "temperature": temperature,
-                        "caching": use_cache  # Use LiteLLM built-in caching
                     }
+
+                    # Add cache parameter if specified
+                    if use_cache is True:
+                        params["caching"] = True  # Enable caching for this request
 
                     if max_tokens:
                         params["max_tokens"] = max_tokens
@@ -431,15 +464,40 @@ class LiteLLMService:
         metadata: Optional[Dict[str, Any]]
     ) -> LiteLLMResponse:
         """Process successful LiteLLM response."""
-        # Check if this is a cached response (TextRag object)
-        if response_data.__class__.__name__ == 'TextRag':
-            # Handle cached TextRag response
-            content = response_data.text
+        # Check if this is a cached response
+        # LiteLLM may use various indicators for cached responses
+        is_cached = (
+            response_data.__class__.__name__ == 'TextRag' or
+            hasattr(response_data, '_cached') or
+            getattr(response_data, '_cache_hit', False) or
+            (hasattr(response_data, 'model') and 'cache' in str(response_data.model).lower())
+        )
+
+        # Additional check: look for cache-related attributes
+        for attr_name in dir(response_data):
+            if 'cache' in attr_name.lower():
+                attr_value = getattr(response_data, attr_name, None)
+                if attr_value:
+                    logger.debug(f"Found cache attribute: {attr_name} = {attr_value}")
+                    is_cached = True
+
+        if is_cached:
+            # Handle cached response
+            if response_data.__class__.__name__ == 'TextRag':
+                content = response_data.text
+            else:
+                content = response_data.choices[0].message.content
+
             usage = {
                 "prompt_tokens": 0,  # Cached responses don't have usage info
                 "completion_tokens": 0,
                 "total_tokens": 0
             }
+
+            # Mark as cached and update metrics
+            cached = True
+            self._metrics["cache_hits"] += 1
+            logger.info(f"Cache hit detected for model {model} - type: {response_data.__class__.__name__}")
         else:
             # Handle normal ModelResponse
             content = response_data.choices[0].message.content
@@ -449,46 +507,11 @@ class LiteLLMService:
                 "total_tokens": 0
             }
 
-        # Check if response came from LiteLLM cache
-        # LiteLLM returns cached responses as TextRag objects with cache_key
-        cached = False
-
-        # Debug all response attributes
-        response_attrs = {attr: str(getattr(response_data, attr, 'N/A'))
-                         for attr in dir(response_data) if not attr.startswith('_')}
-
-        # Check if response is a cached TextRag object
-        if response_data.__class__.__name__ == 'TextRag':
-            cached = True
-            print(f"✅ Found cached TextRag response: {response_data}")
-        # Check for cache_key attribute (indicative of cached response)
-        elif hasattr(response_data, 'cache_key'):
-            cached = True
-            print(f"✅ Found cache_key attribute: {response_data.cache_key}")
-        # Check for _hidden_params with cache information
-        elif hasattr(response_data, '_hidden_params'):
-            cached = response_data._hidden_params.get('cache_hit', False)
-            print(f"✅ Checking _hidden_params: {response_data._hidden_params}")
-
-        # Alternative: check if response time is too fast (indicates cache hit)
-        if not cached and response_time_ms < 100:  # Less than 100ms likely from cache
-            cached = True
-            print(f"✅ Fast response indicates cache hit: {response_time_ms}ms")
-
-        print(f"Cache detection debug:")
-        print(f"  response_type: {response_data.__class__.__name__}")
-        print(f"  response_time_ms: {response_time_ms}")
-        print(f"  cached: {cached}")
-        print(f"  response_attributes: {response_attrs}")
-        print(f"  hasattr cache_key: {hasattr(response_data, 'cache_key')}")
-        print(f"  hasattr _hidden_params: {hasattr(response_data, '_hidden_params')}")
-
-        logger.debug(f"Cache detection - response_type: {response_data.__class__.__name__}, response_time_ms: {response_time_ms}, cached: {cached}")
-
-        if cached:
-            self._metrics["cache_hits"] += 1
-        else:
+            # Mark as not cached
+            cached = False
             self._metrics["cache_misses"] += 1
+
+        logger.debug(f"Response - type: {response_data.__class__.__name__}, cached: {cached}, time: {response_time_ms}ms")
 
         # Calculate cost - temporarily simplified to avoid serialization issues
         cost = Decimal("0.0001")  # Fixed minimal cost for testing
@@ -574,7 +597,7 @@ class LiteLLMService:
 
     async def _check_rate_limit(self, tenant_id: str):
         """Check and enforce rate limits."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         # Initialize tenant rate limit tracking
         if tenant_id not in self._rate_limits:
@@ -661,7 +684,7 @@ class LiteLLMService:
                 "metadata": response.metadata,
                 "fallback_used": response.fallback_used,
                 "retry_count": response.retry_count,
-                "cached_at": datetime.utcnow().isoformat()
+                "cached_at": datetime.now(timezone.utc).isoformat()
             }
 
             logger.debug(f"Cache data prepared: {cache_data}")
@@ -680,6 +703,86 @@ class LiteLLMService:
 
         except Exception as e:
             logger.warning(f"Failed to cache response: {str(e)}")
+
+    async def _get_cached_response(
+        self,
+        messages: List[Dict[str, str]],
+        model: str,
+        temperature: float,
+        max_tokens: Optional[int],
+        tenant_id: str
+    ) -> Optional[LiteLLMResponse]:
+        """Get cached response if available."""
+        try:
+            cache_key = self._generate_cache_key(model, messages, temperature, max_tokens)
+
+            # Try to get from Redis cache
+            cached_data = await self.redis_client.get(cache_key)
+
+            if cached_data:
+                # Deserialize and convert back to LiteLLMResponse
+                response_data = self.redis_client.serializer.deserialize(cached_data)
+
+                # Create cached response with cached=True
+                cached_response = LiteLLMResponse(
+                    content=response_data["content"],
+                    model=response_data["model"],
+                    provider=response_data["provider"],
+                    usage=response_data["usage"],
+                    cost=response_data["cost"],
+                    response_time_ms=response_data["response_time_ms"],
+                    metadata=response_data["metadata"],
+                    fallback_used=response_data["fallback_used"],
+                    retry_count=response_data["retry_count"],
+                    cached=True,  # Mark as cached
+                    cached_at=response_data["cached_at"]
+                )
+
+                logger.debug(f"Cache hit for key: {cache_key}")
+                return cached_response
+
+        except Exception as e:
+            logger.warning(f"Cache retrieval failed: {str(e)}")
+
+        return None
+
+    async def _cache_response(
+        self,
+        messages: List[Dict[str, str]],
+        model: str,
+        temperature: float,
+        max_tokens: Optional[int],
+        tenant_id: str,
+        response: LiteLLMResponse
+    ) -> None:
+        """Cache the successful response."""
+        try:
+            cache_key = self._generate_cache_key(model, messages, temperature, max_tokens)
+
+            # Prepare data for caching
+            cache_data = {
+                "content": response.content,
+                "model": response.model,
+                "provider": response.provider,
+                "usage": response.usage,
+                "cost": response.cost,
+                "response_time_ms": response.response_time_ms,
+                "metadata": response.metadata,
+                "fallback_used": response.fallback_used,
+                "retry_count": response.retry_count,
+                "cached_at": datetime.now(timezone.utc).isoformat()
+            }
+
+            # Serialize and store in Redis
+            serialized_data = self.redis_client.serializer.serialize(cache_data)
+
+            # Cache for 1 hour (3600 seconds)
+            await self.redis_client.set(cache_key, serialized_data, ttl=3600)
+
+            logger.debug(f"Cached response with key: {cache_key}")
+
+        except Exception as e:
+            logger.warning(f"Cache storage failed: {str(e)}")
 
     def _generate_cache_key(
         self,
@@ -700,6 +803,17 @@ class LiteLLMService:
         key_hash = hashlib.sha256(key_str.encode()).hexdigest()
 
         return f"litellm_cache:{key_hash[:16]}"
+
+    def _generate_request_hash(self, model: str, messages: List[Dict[str, str]], temperature: float, max_tokens: Optional[int]) -> str:
+        """Generate hash for request tracking."""
+        key_data = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens
+        }
+        key_str = json.dumps(key_data, sort_keys=True)
+        return hashlib.sha256(key_str.encode()).hexdigest()
 
     async def _update_metrics(self, response: LiteLLMResponse):
         """Update service metrics."""
@@ -733,7 +847,7 @@ class LiteLLMService:
                 "model": model,
                 "provider": self._get_provider_for_model(model),
                 "success": success,
-                "timestamp": datetime.utcnow(),
+                "timestamp": datetime.now(timezone.utc),
                 "metadata": metadata or {}
             }
 
@@ -778,7 +892,7 @@ class LiteLLMService:
         health_status = {
             "healthy": True,
             "models": {},
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
 
         for model in self.all_models[:3]:  # Check first 3 models

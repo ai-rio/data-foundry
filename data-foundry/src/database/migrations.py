@@ -6,6 +6,7 @@ import asyncio
 from typing import List
 
 from sqlmodel import SQLModel
+from sqlalchemy import text
 from src.core.config import settings
 from src.database.connection import db_connection
 
@@ -69,51 +70,86 @@ async def create_rls_policies():
         ]
 
         for table in tables:
-            await conn.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY;")
+            await conn.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
 
-        # Create policy for data_records
+        # Create policy for data_records with proper PostgreSQL syntax
         await conn.execute("""
-            CREATE POLICY IF NOT EXISTS tenant_isolation_data_records
-            ON data_records
-            FOR ALL
-            TO PUBLIC
-            USING (tenant_id = current_setting('app.tenant_id', true));
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_policy
+                    WHERE polname = 'tenant_isolation_data_records'
+                ) THEN
+                    CREATE POLICY tenant_isolation_data_records
+                    ON data_records FOR ALL TO PUBLIC
+                    USING (tenant_id = current_setting('app.tenant_id', true))
+                    WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+                END IF;
+            END $$;
         """)
 
-        # Create policy for processed_data
+        # Create policy for processed_data with proper PostgreSQL syntax
         await conn.execute("""
-            CREATE POLICY IF NOT EXISTS tenant_isolation_processed_data
-            ON processed_data
-            FOR ALL
-            TO PUBLIC
-            USING (tenant_id = current_setting('app.tenant_id', true));
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_policy
+                    WHERE polname = 'tenant_isolation_processed_data'
+                ) THEN
+                    CREATE POLICY tenant_isolation_processed_data
+                    ON processed_data FOR ALL TO PUBLIC
+                    USING (tenant_id = current_setting('app.tenant_id', true))
+                    WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+                END IF;
+            END $$;
         """)
 
-        # Create policy for human_review_queue
+        # Create policy for human_review_queue with proper PostgreSQL syntax
         await conn.execute("""
-            CREATE POLICY IF NOT EXISTS tenant_isolation_human_review_queue
-            ON human_review_queue
-            FOR ALL
-            TO PUBLIC
-            USING (tenant_id = current_setting('app.tenant_id', true));
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_policy
+                    WHERE polname = 'tenant_isolation_human_review_queue'
+                ) THEN
+                    CREATE POLICY tenant_isolation_human_review_queue
+                    ON human_review_queue FOR ALL TO PUBLIC
+                    USING (tenant_id = current_setting('app.tenant_id', true))
+                    WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+                END IF;
+            END $$;
         """)
 
-        # Create policy for users (allow users to see their own tenant's users)
+        # Create policy for users with proper PostgreSQL syntax
         await conn.execute("""
-            CREATE POLICY IF NOT EXISTS tenant_isolation_users
-            ON users
-            FOR ALL
-            TO PUBLIC
-            USING (tenant_id = current_setting('app.tenant_id', true));
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_policy
+                    WHERE polname = 'tenant_isolation_users'
+                ) THEN
+                    CREATE POLICY tenant_isolation_users
+                    ON users FOR ALL TO PUBLIC
+                    USING (tenant_id = current_setting('app.tenant_id', true))
+                    WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+                END IF;
+            END $$;
         """)
 
-        # Create policy for tenants (allow all access - tenants table is special)
+        # Create policy for tenants with proper PostgreSQL syntax
         await conn.execute("""
-            CREATE POLICY IF NOT EXISTS allow_all_tenants
-            ON tenants
-            FOR ALL
-            TO PUBLIC
-            USING (true);
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_policy
+                    WHERE polname = 'allow_all_tenants'
+                ) THEN
+                    CREATE POLICY allow_all_tenants
+                    ON tenants FOR ALL TO PUBLIC
+                    USING (true)
+                    WITH CHECK (true);
+                END IF;
+            END $$;
         """)
 
         # Create RLS function for automatic tenant setting
@@ -137,9 +173,17 @@ async def create_rls_policies():
 
         for table in tables_with_tenant_id:
             await conn.execute(f"""
-                CREATE TRIGGER IF NOT EXISTS set_tenant_id_{table}
-                BEFORE INSERT OR UPDATE ON {table}
-                FOR EACH ROW EXECUTE FUNCTION set_tenant_id();
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_trigger
+                        WHERE tgname = 'set_tenant_id_{table}'
+                    ) THEN
+                        CREATE TRIGGER set_tenant_id_{table}
+                        BEFORE INSERT OR UPDATE ON {table}
+                        FOR EACH ROW EXECUTE FUNCTION set_tenant_id();
+                    END IF;
+                END $$;
             """)
 
 
@@ -152,6 +196,7 @@ async def seed_test_data():
     from src.models.tenant import Tenant, TenantStatus
     from src.core.security import get_password_hash
 
+    # First, create tenants using a regular session (tenants table allows all access)
     async with db_connection.get_session() as session:
         # Create test tenants
         tenant1 = Tenant(
@@ -176,48 +221,33 @@ async def seed_test_data():
         session.add(tenant2)
         await session.commit()
 
-        # Create test users
-        user1 = User(
-            user_id="user_001",
-            email="admin@testcorp.com",
-            tenant_id="tenant_001",
-            hashed_password=get_password_hash("testpass123"),
-            role=UserRole.ADMIN,
-            status=UserStatus.ACTIVE,
-            first_name="Admin",
-            last_name="User",
-        )
+    # Now create users using tenant-aware sessions for proper RLS
+    # Users for tenant_001
+    async with db_connection.get_tenant_connection("tenant_001") as conn:
+        await conn.execute("""
+            INSERT INTO users (user_id, email, tenant_id, hashed_password, role, status, first_name, last_name)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        """, "user_001", "admin@testcorp.com", "tenant_001", get_password_hash("testpass123"), "ADMIN", "ACTIVE", "Admin", "User")
 
-        user2 = User(
-            user_id="user_002",
-            email="analyst@testcorp.com",
-            tenant_id="tenant_001",
-            hashed_password=get_password_hash("testpass123"),
-            role=UserRole.ANALYST,
-            status=UserStatus.ACTIVE,
-            first_name="Data",
-            last_name="Analyst",
-        )
+        await conn.execute("""
+            INSERT INTO users (user_id, email, tenant_id, hashed_password, role, status, first_name, last_name)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        """, "user_002", "analyst@testcorp.com", "tenant_001", get_password_hash("testpass123"), "ANALYST", "ACTIVE", "Data", "Analyst")
 
-        user3 = User(
-            user_id="user_003",
-            email="viewer@demoinc.com",
-            tenant_id="tenant_002",
-            hashed_password=get_password_hash("testpass123"),
-            role=UserRole.VIEWER,
-            status=UserStatus.ACTIVE,
-            first_name="View",
-            last_name="User",
-        )
-
-        session.add(user1)
-        session.add(user2)
-        session.add(user3)
-        await session.commit()
+    # Users for tenant_002
+    async with db_connection.get_tenant_connection("tenant_002") as conn:
+        await conn.execute("""
+            INSERT INTO users (user_id, email, tenant_id, hashed_password, role, status, first_name, last_name)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        """, "user_003", "viewer@demoinc.com", "tenant_002", get_password_hash("testpass123"), "VIEWER", "ACTIVE", "View", "User")
 
 
 async def run_migrations():
     """Run all database migrations."""
+    # Initialize database connection first
+    print("Initializing database connection...")
+    await db_connection.initialize()
+
     print("Creating database tables...")
     await create_tables()
 

@@ -9,8 +9,9 @@ import json
 import logging
 import hashlib
 import asyncio
+import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, asdict
 from enum import Enum
@@ -43,7 +44,7 @@ class AuditContext:
 
     def __post_init__(self):
         if self.timestamp is None:
-            object.__setattr__(self, 'timestamp', datetime.utcnow())
+            object.__setattr__(self, 'timestamp', datetime.now(timezone.utc))
 
 
 @dataclass(frozen=True)
@@ -188,7 +189,7 @@ class AuditLogger:
             calculation_id=calculation_data.get("calculation_id"),
             immutable_data=calculation_data,
             context=context,
-            timestamp=datetime.utcnow()
+            timestamp=datetime.now(timezone.utc)
         )
         await self.log_event(record)
 
@@ -209,7 +210,7 @@ class AuditLogger:
                 "details": details or {}
             },
             context=context,
-            timestamp=datetime.utcnow()
+            timestamp=datetime.now(timezone.utc)
         )
         await self.log_event(record)
 
@@ -230,7 +231,7 @@ class AuditLogger:
                 "error_details": getattr(error, '__dict__', {})
             },
             context=context,
-            timestamp=datetime.utcnow()
+            timestamp=datetime.now(timezone.utc)
         )
         await self.log_event(record)
 
@@ -258,7 +259,7 @@ class AuditLogger:
         """Write records to file with rotation."""
         try:
             # Use daily rotation
-            today = datetime.utcnow().strftime("%Y-%m-%d")
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             log_file = self.log_dir / f"audit-{today}.logl"
 
             # Write in append mode
@@ -315,7 +316,7 @@ class AuditLogger:
             if self.enable_file_logging:
                 # Get recent days to search
                 days_to_search = 7  # Search last 7 days by default
-                current_date = datetime.utcnow()
+                current_date = datetime.now(timezone.utc)
 
                 for day_offset in range(days_to_search):
                     search_date = (current_date - timedelta(days=day_offset)).strftime("%Y-%m-%d")
@@ -375,7 +376,7 @@ class AuditLogger:
         days: int = 30
     ) -> List[Dict[str, Any]]:
         """Get complete audit trail for a tenant."""
-        start_time = datetime.utcnow() - timedelta(days=days)
+        start_time = datetime.now(timezone.utc) - timedelta(days=days)
         return await self.search_audit_records(
             tenant_id=tenant_id,
             start_time=start_time
@@ -384,7 +385,7 @@ class AuditLogger:
     async def cleanup_old_logs(self, retention_days: int = 365):
         """Clean up old audit logs beyond retention period."""
         try:
-            cutoff_date = datetime.utcnow() - timedelta(days=retention_days)
+            cutoff_date = datetime.now(timezone.utc) - timedelta(days=retention_days)
             deleted_count = 0
 
             for log_file in self.log_dir.glob("audit-*.logl"):

@@ -6,7 +6,7 @@ automatically processed and approved by the AI system without requiring
 human review. This represents the final, production-ready data.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 
 from sqlalchemy import JSON, Column, Index
@@ -216,11 +216,11 @@ class ProcessedData(SQLModel, table=True):
     @property
     def days_since_processed(self) -> int:
         """Calculate days since processing."""
-        return (datetime.utcnow() - self.processed_at).days
+        return (datetime.now(timezone.utc) - self.processed_at).days
 
     @property
     def is_expired(self) -> bool:
         """Check if data has expired."""
         if self.expires_at:
-            return datetime.utcnow() > self.expires_at
+            return datetime.now(timezone.utc) > self.expires_at
         return False

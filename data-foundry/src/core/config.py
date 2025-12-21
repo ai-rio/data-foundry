@@ -3,18 +3,46 @@ Data Foundry Configuration - The "Glue" Layer
 
 This module manages all external service connections and application settings.
 It serves as the central configuration hub for the entire platform.
+
+SECURITY INTEGRATION: Now uses SecretManager for secure secret management
 """
 
 from functools import lru_cache
+import os
+import logging
 
 from pydantic_settings import BaseSettings
+from pydantic import ConfigDict
+from src.core.secret_manager import SecretManager
+
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
     """
     Application settings loaded from environment variables.
     This is the single source of truth for all configuration.
+
+    SECURITY INTEGRATION: Uses SecretManager for secure secret retrieval
     """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # Initialize SecretManager for secure secret management
+        self._secret_manager = SecretManager()
+        # Load and encrypt environment secrets on initialization
+        self._load_secrets_securely()
+        logger.info("Settings initialized with SecretManager integration")
+
+    def _load_secrets_securely(self):
+        """Load and encrypt secrets from environment using SecretManager."""
+        try:
+            # Load and encrypt existing secrets
+            encrypted_secrets = self._secret_manager.load_environment_secrets()
+            logger.info(f"Securely loaded {len(encrypted_secrets)} encrypted secrets")
+        except Exception as e:
+            logger.error(f"Failed to load secrets securely: {e}")
 
     # Application Settings
     APP_NAME: str = "Data Foundry"
@@ -62,6 +90,80 @@ class Settings(BaseSettings):
     OPENROUTER_API_KEY: str | None = None
     OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
     OPENROUTER_MODEL: str = "openrouter/openai/gpt-4o-mini"
+
+    # SECURE PROPERTIES: Get secrets through SecretManager
+    @property
+    def secure_openai_api_key(self) -> str | None:
+        """Get OpenAI API key securely through SecretManager."""
+        return self._secret_manager.get_secret("OPENAI_API_KEY")
+
+    @property
+    def secure_openrouter_api_key(self) -> str | None:
+        """Get OpenRouter API key securely through SecretManager."""
+        return self._secret_manager.get_secret("OPENROUTER_API_KEY")
+
+    @property
+    def secure_anthropic_api_key(self) -> str | None:
+        """Get Anthropic API key securely through SecretManager."""
+        return self._secret_manager.get_secret("ANTHROPIC_API_KEY")
+
+    @property
+    def secure_github_token(self) -> str | None:
+        """Get GitHub token securely through SecretManager."""
+        return self._secret_manager.get_secret("GITHUB_TOKEN")
+
+    @property
+    def secure_label_studio_api_key(self) -> str | None:
+        """Get Label Studio API key securely through SecretManager."""
+        return self._secret_manager.get_secret("LABEL_STUDIO_API_KEY")
+
+    @property
+    def secure_stripe_secret_key(self) -> str | None:
+        """Get Stripe secret key securely through SecretManager."""
+        return self._secret_manager.get_secret("STRIPE_SECRET_KEY")
+
+    @property
+    def secure_database_url(self) -> str:
+        """Get database URL securely through SecretManager."""
+        encrypted_url = os.getenv("DATABASE_URL_ENCRYPTED")
+        if encrypted_url:
+            try:
+                from src.core.database_security import SecureDatabaseConfig
+                db_config = SecureDatabaseConfig()
+                return db_config.decrypt_connection_string(encrypted_url)
+            except Exception as e:
+                logger.error(f"Failed to decrypt database URL: {e}")
+
+        # Fallback to plaintext (with warning)
+        url = self.DATABASE_URL
+        if url and "password" in url.lower():
+            logger.warning("Using plaintext database URL - security risk")
+        return url
+
+    @property
+    def secure_redis_url(self) -> str:
+        """Get Redis URL securely through SecretManager."""
+        encrypted_url = os.getenv("REDIS_URL_ENCRYPTED")
+        if encrypted_url:
+            try:
+                from src.core.database_security import SecureDatabaseConfig
+                db_config = SecureDatabaseConfig()
+                return db_config.decrypt_connection_string(encrypted_url)
+            except Exception as e:
+                logger.error(f"Failed to decrypt Redis URL: {e}")
+
+        return self.REDIS_URL
+
+    def mask_sensitive_config(self, config_dict: dict) -> dict:
+        """Mask sensitive configuration values for logging."""
+        return {
+            **config_dict,
+            "OPENAI_API_KEY": "***" if config_dict.get("OPENAI_API_KEY") else None,
+            "OPENROUTER_API_KEY": "***" if config_dict.get("OPENROUTER_API_KEY") else None,
+            "ANTHROPIC_API_KEY": "***" if config_dict.get("ANTHROPIC_API_KEY") else None,
+            "GITHUB_TOKEN": "***" if config_dict.get("GITHUB_TOKEN") else None,
+            "DATABASE_URL": self._secret_manager.mask_secrets_in_log(config_dict.get("DATABASE_URL", "")),
+        }
 
     # LiteLLM Configuration
     LITELLM_LOGGING: bool = True
@@ -136,10 +238,11 @@ class Settings(BaseSettings):
     PROMPT_TRUNCATE_ENABLED: bool = False  # Whether to truncate long prompts
     PROMPT_COST_TRACKING: bool = True
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = True
+    model_config = ConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=True
+    )
 
     @property
     def is_production(self) -> bool:
@@ -184,27 +287,32 @@ def get_settings() -> Settings:
 settings = get_settings()
 
 
-# Connection strings for external services (the "glue")
+# Connection strings for external services (SECURE - using SecretManager)
 EXTERNAL_SERVICES = {
-    "postgres": settings.DATABASE_URL,
-    "redis": settings.REDIS_URL,
+    "postgres": settings.secure_database_url,
+    "redis": settings.secure_redis_url,
     "label_studio": f"{settings.LABEL_STUDIO_URL}/api",
     "prefect": "http://localhost:4200/api",
 }
 
-# AI Provider configurations
+# AI Provider configurations (SECURE - using SecretManager)
 AI_PROVIDERS = {
     "openai": {
-        "api_key": settings.OPENAI_API_KEY,
+        "api_key": settings.secure_openai_api_key,
         "model": settings.OPENAI_MODEL,
         "temperature": settings.OPENAI_TEMPERATURE,
         "max_tokens": settings.OPENAI_MAX_TOKENS,
     },
     "anthropic": {
-        "api_key": settings.ANTHROPIC_API_KEY,
+        "api_key": settings.secure_anthropic_api_key,
         "model": settings.ANTHROPIC_MODEL,
         "temperature": settings.ANTHROPIC_TEMPERATURE,
         "max_tokens": settings.ANTHROPIC_MAX_TOKENS,
+    },
+    "openrouter": {
+        "api_key": settings.secure_openrouter_api_key,
+        "base_url": settings.OPENROUTER_BASE_URL,
+        "model": settings.OPENROUTER_MODEL,
     },
     "litellm": {
         "primary_model": settings.PRIMARY_MODEL,

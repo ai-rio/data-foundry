@@ -15,6 +15,7 @@ from decimal import Decimal
 from unittest.mock import Mock, patch, AsyncMock
 import json
 import asyncio
+from sqlalchemy import text
 
 from src.services.ai_service import AIService, AIRequest
 from src.services.litellm_service import LiteLLMService, LiteLLMResponse
@@ -489,7 +490,7 @@ class TestDatabaseIntegration:
     async def test_database_connection(self, db_session):
         """Test database connection and basic operations."""
         # Test basic database connection
-        result = await db_session.execute("SELECT 1")
+        result = await db_session.execute(text("SELECT 1"))
         assert result.scalar() == 1
 
     @pytest.mark.asyncio
@@ -823,7 +824,7 @@ class TestEndToEndWorkflow:
 
         # Step 6: Verify all records were processed
         records = await db_session.execute(
-            "SELECT * FROM data_records WHERE tenant_id = :tenant_id",
+            text("SELECT * FROM data_records WHERE tenant_id = :tenant_id"),
             {"tenant_id": tenant.tenant_id}
         )
         records = records.fetchall()
@@ -894,7 +895,7 @@ class TestEndToEndWorkflow:
 
         # Verify cleanup
         remaining_records = await db_session.execute(
-            "SELECT COUNT(*) FROM data_records WHERE tenant_id = :tenant_id",
+            text("SELECT COUNT(*) FROM data_records WHERE tenant_id = :tenant_id"),
             {"tenant_id": tenant.tenant_id}
         )
         assert remaining_records.scalar() == 0
@@ -953,11 +954,11 @@ class TestEndToEndWorkflow:
 
         # Verify tenant isolation by querying
         records1 = await db_session.execute(
-            "SELECT COUNT(*) FROM data_records WHERE tenant_id = :tenant_id",
+            text("SELECT COUNT(*) FROM data_records WHERE tenant_id = :tenant_id"),
             {"tenant_id": tenant1.tenant_id}
         )
         records2 = await db_session.execute(
-            "SELECT COUNT(*) FROM data_records WHERE tenant_id = :tenant_id",
+            text("SELECT COUNT(*) FROM data_records WHERE tenant_id = :tenant_id"),
             {"tenant_id": tenant2.tenant_id}
         )
 
@@ -966,7 +967,7 @@ class TestEndToEndWorkflow:
 
         # Verify no cross-tenant data access
         cross_tenant_records = await db_session.execute(
-            "SELECT COUNT(*) FROM data_records WHERE tenant_id != :tenant_id",
+            text("SELECT COUNT(*) FROM data_records WHERE tenant_id != :tenant_id"),
             {"tenant_id": tenant1.tenant_id}
         )
         # Should return 1 (tenant2's record)
@@ -989,7 +990,7 @@ class TestEndToEndWorkflow:
 
         # Cleanup
         records = await db_session.execute(
-            "SELECT * FROM data_records WHERE tenant_id IN (:tenant1_id, :tenant2_id)",
+            text("SELECT * FROM data_records WHERE tenant_id IN (:tenant1_id, :tenant2_id)"),
             {"tenant1_id": tenant1.tenant_id, "tenant2_id": tenant2.tenant_id}
         )
         records = records.fetchall()

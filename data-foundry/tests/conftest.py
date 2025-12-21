@@ -59,7 +59,7 @@ def test_settings() -> Settings:
     # Create a new settings instance with test values
     test_settings = Settings(
         # Database
-        DATABASE_URL="postgresql://test:test@localhost:5432/data_foundry_test",
+        DATABASE_URL="postgresql://foundry_user:foundry_password@localhost:5432/data_foundry",
         DATABASE_POOL_SIZE=5,
         DATABASE_MAX_OVERFLOW=10,
 

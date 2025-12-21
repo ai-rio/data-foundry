@@ -169,14 +169,14 @@ async def get_system_info():
             "ai_providers": {
                 "openai": {
                     "model": settings.OPENAI_MODEL,
-                    "configured": bool(settings.OPENAI_API_KEY),
+                    "configured": bool(settings.secure_openai_api_key()),
                 },
                 "anthropic": {
                     "model": settings.ANTHROPIC_MODEL,
-                    "configured": bool(settings.ANTHROPIC_API_KEY),
+                    "configured": bool(settings.secure_anthropic_api_key()),
                 },
             },
-            "stripe": {"configured": bool(settings.STRIPE_SECRET_KEY)},
+            "stripe": {"configured": bool(settings.secure_stripe_secret_key())},
         },
         "features": {
             "pii_redaction": settings.ENABLE_PII_REDACTION,

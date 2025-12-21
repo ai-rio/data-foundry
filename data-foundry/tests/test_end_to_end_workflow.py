@@ -36,8 +36,8 @@ from src.models.data_record import DataRecord
 from src.models.processed_data import ProcessedData
 from src.models.human_review_queue import HumanReviewQueue
 from src.models.usage_tracking import TenantUsage, AuditLog
-from src.core.audit import AuditService
-from src.tasks.ingestion import DataIngestionTask
+from src.core.audit_service import AuditService
+from src.tasks.ingestion import data_ingestion_flow
 from src.database.connection import db_connection
 
 
@@ -104,7 +104,7 @@ Alice Williams,alice@startup.com,555-2468,Sales"""
         ]
 
     @pytest.fixture
-    def sample_records(self, db_session: AsyncSession, test_tenant):
+    async def sample_records(self, db_session: AsyncSession, test_tenant):
         """Create sample data records for workflow testing."""
         records = []
 

@@ -2,7 +2,7 @@
 Usage tracking and billing models for AI operations.
 """
 
-from datetime import datetime, date, timedelta
+from datetime import datetime, timezone, date, timedelta
 from typing import Optional, Dict, Any, List
 from decimal import Decimal
 from enum import Enum
@@ -446,7 +446,7 @@ async def update_tenant_usage(
     model_count = tenant_usage.model_usage.get(token_usage.model, 0)
     tenant_usage.model_usage[token_usage.model] = model_count + 1
 
-    tenant_usage.updated_at = datetime.utcnow()
+    tenant_usage.updated_at = datetime.now(timezone.utc)
 
     await session.commit()
 

@@ -232,7 +232,7 @@ async def apply_ai_labeling(data: list[dict[str, Any]]) -> list[dict[str, Any]]:
         try:
             from openai import OpenAI
 
-            client = OpenAI(api_key=settings.OPENAI_API_KEY)
+            client = OpenAI(api_key=settings.secure_openai_api_key())
 
             labeled_data = []
             for record in data:
@@ -334,7 +334,7 @@ def send_to_label_studio(data: list[dict[str, Any]]) -> bool:
 
         # Connect to Label Studio
         ls = Client(
-            url=settings.LABEL_STUDIO_URL, api_key=settings.LABEL_STUDIO_API_KEY
+            url=settings.LABEL_STUDIO_URL, api_key=settings.secure_label_studio_api_key()
         )
 
         # Get or create project
@@ -431,7 +431,7 @@ async def data_ingestion_flow(
             redacted_data = raw_data
 
         # Step 3: Apply AI labeling
-        if enable_ai_labeling and (settings.OPENAI_API_KEY or settings.PRIMARY_MODEL):
+        if enable_ai_labeling and (settings.secure_openai_api_key() or settings.PRIMARY_MODEL):
             labeled_data = await apply_ai_labeling(redacted_data)
         else:
             labeled_data = redacted_data
@@ -445,7 +445,7 @@ async def data_ingestion_flow(
             human_review = []
 
         # Step 5: Send low confidence to Label Studio
-        if human_review and settings.LABEL_STUDIO_API_KEY:
+        if human_review and settings.secure_label_studio_api_key():
             await send_to_label_studio(human_review)
 
         # Step 6: Save auto-approved data to database

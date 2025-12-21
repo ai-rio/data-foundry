@@ -19,12 +19,17 @@ def validate_input(input_str: str) -> bool:
     # Check for SQL injection patterns
     sql_patterns = [
         r"'(\s*|;.*)or\s+'1'='1",
+        r"'(\s*|;.*)or\s+1=1",
+        r"'(\s*|;.*)and\s+1=1",
         r"'(\s*|;.*)union\s+select",
         r"';\s*drop\s+table",
         r"';\s*insert\s+into",
-        r"'(\s*|;.*)and\s+1=1",
+        r"';\s*delete\s+from",
+        r"';\s*update\s+.*set",
         r"'(\s*|;.*)waitfor\s+delay",
         r"'(\s*|;.*)select\s+sleep",
+        r"--\s*$",
+        r"/\*.*\*/",
     ]
 
     # Check for XSS patterns
@@ -58,6 +63,11 @@ def validate_input(input_str: str) -> bool:
         r"\.\.%2f",
         r"%2e%2e%2f",
         r"\.\.%5c",
+        r"\.\.\\\.\.\\\.",
+        r"\.\.\\\\",
+        r"\.\.\/",
+        r"%2e%2e%5c",
+        r"\.\.\.[\\/]",
     ]
 
     all_patterns = sql_patterns + xss_patterns + cmd_patterns + path_patterns

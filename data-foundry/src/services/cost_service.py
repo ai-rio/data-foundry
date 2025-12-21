@@ -7,7 +7,7 @@ different providers, models, and usage patterns.
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Any
 from decimal import Decimal, ROUND_HALF_UP
 from enum import Enum
@@ -66,7 +66,7 @@ class ModelPricing:
         self.capabilities = capabilities or []
         self.hidden_region = hidden_region
         self.additional_fees = additional_fees or {}
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(timezone.utc)
         self.valid_until = None
 
     def get_rate(self, token_type: str, volume_tier: str = "default") -> Decimal:
@@ -136,7 +136,7 @@ class ModelPricing:
         """Check if pricing data is still current."""
         if not self.valid_until:
             return True
-        return datetime.utcnow() < self.valid_until
+        return datetime.now(timezone.utc) < self.valid_until
 
 
 class CostCalculation:
@@ -181,7 +181,7 @@ class CostCalculation:
         self.request_id = request_id
         self.user_id = user_id
         self.metadata = metadata or {}
-        self.calculation_date = datetime.utcnow()
+        self.calculation_date = datetime.now(timezone.utc)
 
     @property
     def cost_per_token(self) -> Decimal:
@@ -630,7 +630,7 @@ class CostService:
         pricing = self._model_pricing[model]
 
         # Check if pricing is still valid
-        if pricing.valid_until and datetime.utcnow() > pricing.valid_until:
+        if pricing.valid_until and datetime.now(timezone.utc) > pricing.valid_until:
             self._refresh_pricing(model)
             pricing = self._model_pricing[model]
 
@@ -820,7 +820,7 @@ class CostService:
         # Add metadata indicating this is an estimate
         metadata = {
             "is_estimate": True,
-            "estimated_at": datetime.utcnow().isoformat(),
+            "estimated_at": datetime.now(timezone.utc).isoformat(),
             "confidence": "high" if estimated_input_tokens > 0 and estimated_output_tokens > 0 else "low"
         }
 
@@ -867,7 +867,7 @@ class CostService:
         pricing = self._model_pricing[model]
         pricing.input_token_cost = input_cost
         pricing.output_token_cost = output_cost
-        pricing.updated_at = datetime.utcnow()
+        pricing.updated_at = datetime.now(timezone.utc)
         pricing.valid_until = valid_until
 
     def _get_volume_tier(self, tenant_id: str) -> str:
@@ -914,7 +914,7 @@ class CostService:
 
         # Add to usage history (keep last 1000 entries)
         usage_entry = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "model": model,
             "tokens": prompt_tokens + completion_tokens,
             "cost": float(cost),
@@ -1054,7 +1054,7 @@ class CostService:
                 "event_type": event_type,
                 "currency": calculation.currency if calculation else "USD",
                 "total_amount": str(amount),
-                "recorded_at": datetime.utcnow().isoformat(),
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
                 "data_foundry_version": settings.APP_VERSION
             }
 
@@ -1096,7 +1096,7 @@ class CostService:
                 event = stripe.billing.meter_event.create(
                     event_name=f"data_foundry_{event_type}",
                     payload=event_payload,
-                    timestamp=int(datetime.utcnow().timestamp()),
+                    timestamp=int(datetime.now(timezone.utc).timestamp()),
                     meter=meter_id,
                     value=str(usage_data.get("tokens", 0))
                 )
@@ -1117,7 +1117,7 @@ class CostService:
             result.update({
                 "success": True,
                 "event_id": event.id,
-                "processed_at": datetime.utcnow().isoformat(),
+                "processed_at": datetime.now(timezone.utc).isoformat(),
                 "stripe_object_type": event.object
             })
 
@@ -1331,7 +1331,7 @@ class CostService:
 
                     forecast["daily_forecast"].append({
                         "day": day + 1,
-                        "date": (datetime.utcnow() + timedelta(days=day + 1)).strftime("%Y-%m-%d"),
+                        "date": (datetime.now(timezone.utc) + timedelta(days=day + 1)).strftime("%Y-%m-%d"),
                         "predicted_cost": round(daily_forecast, 6),
                         "predicted_tokens": int(avg_daily_tokens * weekday_factor)
                     })
