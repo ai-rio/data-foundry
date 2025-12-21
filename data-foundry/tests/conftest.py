@@ -500,10 +500,35 @@ def pii_sample_data():
     ]
 
 
-@pytest.fixture
-def litellm_service():
-    """LiteLLM service for testing."""
+@pytest_asyncio.fixture
+async def litellm_service():
+    """LiteLLM service for testing with mocked completion."""
     service = LiteLLMService()
+
+    # Mock the completion method to return test data
+    async def mock_completion_impl(request):
+        from src.services.litellm_service import LiteLLMResponse
+        from decimal import Decimal
+        return LiteLLMResponse(
+            content='{"category": "test", "confidence": 0.95}',
+            model="gpt-4o",
+            provider="openai",
+            usage={"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
+            cost=Decimal("0.01"),
+            response_time_ms=100.0,
+            cached=False,
+            fallback_used=False,
+            retry_count=0
+        )
+
+    service.completion = mock_completion_impl
+    return service
+
+
+@pytest.fixture
+def cost_service():
+    """Cost service for testing."""
+    service = CostService()
     return service
 
 
