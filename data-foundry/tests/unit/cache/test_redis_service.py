@@ -73,6 +73,7 @@ class TestRedisService:
             service._client = mock_client
             return service
 
+    @pytest.mark.asyncio
     async def test_service_initialization(self, redis_service):
         """Test Redis service initialization."""
         assert redis_service.url == "redis://localhost:6379/0"
@@ -82,6 +83,7 @@ class TestRedisService:
         assert redis_service._stats.hits == 0
         assert redis_service._stats.misses == 0
 
+    @pytest.mark.asyncio
     async def test_get_cache_hit(self, redis_service, mock_redis_pool):
         """Test cache get operation with hit."""
         _, mock_client = mock_redis_pool
@@ -95,6 +97,7 @@ class TestRedisService:
         assert redis_service._stats.hits == 1
         assert redis_service._stats.misses == 0
 
+    @pytest.mark.asyncio
     async def test_get_cache_miss(self, redis_service, mock_redis_pool):
         """Test cache get operation with miss."""
         _, mock_client = mock_redis_pool
@@ -107,6 +110,7 @@ class TestRedisService:
         assert redis_service._stats.hits == 0
         assert redis_service._stats.misses == 1
 
+    @pytest.mark.asyncio
     async def test_get_with_deserialization_error(self, redis_service, mock_redis_pool):
         """Test cache get with deserialization error."""
         _, mock_client = mock_redis_pool
@@ -115,6 +119,7 @@ class TestRedisService:
         with pytest.raises(RedisServiceError, match="Failed to deserialize"):
             await redis_service.get("test_key")
 
+    @pytest.mark.asyncio
     async def test_set_with_ttl(self, redis_service, mock_redis_pool):
         """Test cache set operation with TTL."""
         _, mock_client = mock_redis_pool
@@ -124,6 +129,7 @@ class TestRedisService:
         assert result is True
         mock_client.setex.assert_called_once_with("test_key", 300, '"test_value"')
 
+    @pytest.mark.asyncio
     async def test_set_without_ttl(self, redis_service, mock_redis_pool):
         """Test cache set operation without TTL."""
         _, mock_client = mock_redis_pool
@@ -133,6 +139,7 @@ class TestRedisService:
         assert result is True
         mock_client.set.assert_called_once_with("test_key", '"test_value"')
 
+    @pytest.mark.asyncio
     async def test_set_complex_object(self, redis_service, mock_redis_pool):
         """Test cache set with complex object."""
         _, mock_client = mock_redis_pool
@@ -147,6 +154,7 @@ class TestRedisService:
         # Check that complex data was serialized
         assert '"nested"' in call_args[0][2]
 
+    @pytest.mark.asyncio
     async def test_delete_single_key(self, redis_service, mock_redis_pool):
         """Test deleting a single key."""
         _, mock_client = mock_redis_pool
@@ -157,6 +165,7 @@ class TestRedisService:
         assert result == 1
         mock_client.delete.assert_called_once_with("test_key")
 
+    @pytest.mark.asyncio
     async def test_delete_multiple_keys(self, redis_service, mock_redis_pool):
         """Test deleting multiple keys."""
         _, mock_client = mock_redis_pool
@@ -167,6 +176,7 @@ class TestRedisService:
         assert result == 2
         mock_client.delete.assert_called_once_with("key1", "key2")
 
+    @pytest.mark.asyncio
     async def test_exists_true(self, redis_service, mock_redis_pool):
         """Test exists check when key exists."""
         _, mock_client = mock_redis_pool
@@ -177,6 +187,7 @@ class TestRedisService:
         assert result is True
         mock_client.exists.assert_called_once_with("test_key")
 
+    @pytest.mark.asyncio
     async def test_exists_false(self, redis_service, mock_redis_pool):
         """Test exists check when key doesn't exist."""
         _, mock_client = mock_redis_pool
@@ -187,6 +198,7 @@ class TestRedisService:
         assert result is False
         mock_client.exists.assert_called_once_with("test_key")
 
+    @pytest.mark.asyncio
     async def test_get_ttl(self, redis_service, mock_redis_pool):
         """Test getting TTL for a key."""
         _, mock_client = mock_redis_pool
@@ -197,6 +209,7 @@ class TestRedisService:
         assert result == 300
         mock_client.ttl.assert_called_once_with("test_key")
 
+    @pytest.mark.asyncio
     async def test_get_ttl_no_expire(self, redis_service, mock_redis_pool):
         """Test getting TTL for key with no expiration."""
         _, mock_client = mock_redis_pool
@@ -207,6 +220,7 @@ class TestRedisService:
         assert result == -1  # No expiration
         mock_client.ttl.assert_called_once_with("test_key")
 
+    @pytest.mark.asyncio
     async def test_get_ttl_not_exists(self, redis_service, mock_redis_pool):
         """Test getting TTL for non-existent key."""
         _, mock_client = mock_redis_pool
@@ -217,6 +231,7 @@ class TestRedisService:
         assert result == -2  # Key doesn't exist
         mock_client.ttl.assert_called_once_with("test_key")
 
+    @pytest.mark.asyncio
     async def test_expire_key(self, redis_service, mock_redis_pool):
         """Test setting expiration on a key."""
         _, mock_client = mock_redis_pool
@@ -227,6 +242,7 @@ class TestRedisService:
         assert result is True
         mock_client.expire.assert_called_once_with("test_key", 600)
 
+    @pytest.mark.asyncio
     async def test_health_check_success(self, redis_service, mock_redis_pool):
         """Test successful health check."""
         _, mock_client = mock_redis_pool
@@ -237,6 +253,7 @@ class TestRedisService:
         assert result is True
         mock_client.ping.assert_called_once()
 
+    @pytest.mark.asyncio
     async def test_health_check_failure(self, redis_service, mock_redis_pool):
         """Test failed health check."""
         _, mock_client = mock_redis_pool
@@ -246,6 +263,7 @@ class TestRedisService:
 
         assert result is False
 
+    @pytest.mark.asyncio
     async def test_batch_get(self, redis_service, mock_redis_pool):
         """Test batch get operation."""
         _, mock_client = mock_redis_pool
@@ -256,6 +274,7 @@ class TestRedisService:
         assert results == ["value1", None, "value3"]
         mock_client.mget.assert_called_once_with("key1", "key2", "key3")
 
+    @pytest.mark.asyncio
     async def test_batch_set(self, redis_service, mock_redis_pool):
         """Test batch set operation."""
         _, mock_client = mock_redis_pool
@@ -275,6 +294,7 @@ class TestRedisService:
         assert call_args[0][0] == "key1"
         assert call_args[0][1] == '"value1"'
 
+    @pytest.mark.asyncio
     async def test_batch_delete(self, redis_service, mock_redis_pool):
         """Test batch delete operation."""
         _, mock_client = mock_redis_pool
@@ -285,6 +305,7 @@ class TestRedisService:
         assert result == 3
         mock_client.delete.assert_called_once_with("key1", "key2", "key3")
 
+    @pytest.mark.asyncio
     async def test_clear_cache(self, redis_service, mock_redis_pool):
         """Test clearing all cache."""
         _, mock_client = mock_redis_pool
@@ -295,6 +316,7 @@ class TestRedisService:
         assert result is True
         mock_client.flushdb.assert_called_once()
 
+    @pytest.mark.asyncio
     async def test_get_statistics(self, redis_service):
         """Test getting cache statistics."""
         # Simulate some cache operations
@@ -312,6 +334,7 @@ class TestRedisService:
         assert stats.total_requests == 15
         assert stats.hit_rate == 10 / 15
 
+    @pytest.mark.asyncio
     async def test_reset_statistics(self, redis_service):
         """Test resetting cache statistics."""
         # Set some stats
@@ -325,6 +348,7 @@ class TestRedisService:
         assert redis_service._stats.sets == 0
         assert redis_service._stats.deletes == 0
 
+    @pytest.mark.asyncio
     async def test_get_performance_metrics(self, redis_service):
         """Test getting performance metrics."""
         # Simulate some operations
@@ -339,6 +363,7 @@ class TestRedisService:
         assert metrics.total_operations == 3
         assert metrics.operations_per_second > 0
 
+    @pytest.mark.asyncio
     async def test_increment_counter(self, redis_service, mock_redis_pool):
         """Test incrementing a counter."""
         _, mock_client = mock_redis_pool
@@ -349,6 +374,7 @@ class TestRedisService:
         assert result == 5
         mock_client.incrby.assert_called_once_with("counter_key", 2)
 
+    @pytest.mark.asyncio
     async def test_decrement_counter(self, redis_service, mock_redis_pool):
         """Test decrementing a counter."""
         _, mock_client = mock_redis_pool
@@ -359,6 +385,7 @@ class TestRedisService:
         assert result == 3
         mock_client.decrby.assert_called_once_with("counter_key", 1)
 
+    @pytest.mark.asyncio
     async def test_connection_error_handling(self, redis_service, mock_redis_pool):
         """Test handling of connection errors."""
         _, mock_client = mock_redis_pool
@@ -367,6 +394,7 @@ class TestRedisService:
         with pytest.raises(RedisConnectionError, match="Redis connection failed"):
             await redis_service.get("test_key")
 
+    @pytest.mark.asyncio
     async def test_retry_logic(self, redis_service, mock_redis_pool):
         """Test retry logic on failed operations."""
         _, mock_client = mock_redis_pool
@@ -382,6 +410,7 @@ class TestRedisService:
         assert result == "success"
         assert mock_client.get.call_count == 3
 
+    @pytest.mark.asyncio
     async def test_retry_exhausted(self, redis_service, mock_redis_pool):
         """Test when retries are exhausted."""
         _, mock_client = mock_redis_pool
