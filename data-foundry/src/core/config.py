@@ -58,13 +58,23 @@ class Settings(BaseSettings):
     ANTHROPIC_TEMPERATURE: float = 0.3
     ANTHROPIC_MAX_TOKENS: int = 2048
 
+    # OpenRouter Configuration
+    OPENROUTER_API_KEY: str | None = None
+    OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
+    OPENROUTER_MODEL: str = "openrouter/openai/gpt-4o-mini"
+
     # LiteLLM Configuration
     LITELLM_LOGGING: bool = True
     LITELLM_CACHE_TTL: int = 3600  # 1 hour
     LITELLM_REQUEST_TIMEOUT: int = 30
-    PRIMARY_MODEL: str = "gpt-4o"
-    FALLBACK_MODELS: list[str] = ["claude-3-5-sonnet", "gpt-4o-mini"]
-    MODEL_LIST: list[str] = ["gpt-4o", "claude-3-5-sonnet", "gpt-4o-mini", "gpt-3.5-turbo"]
+    PRIMARY_MODEL: str = "openrouter/openai/gpt-4o-mini"
+    FALLBACK_MODELS: list[str] = ["openrouter/anthropic/claude-3.5-sonnet", "openrouter/openai/gpt-4o"]
+    MODEL_LIST: list[str] = [
+        "openrouter/openai/gpt-4o-mini",
+        "openrouter/anthropic/claude-3.5-sonnet",
+        "openrouter/openai/gpt-4o",
+        "openrouter/openai/gpt-3.5-turbo"
+    ]
 
     # Cost Tracking Configuration
     ENABLE_COST_TRACKING: bool = True

@@ -103,7 +103,14 @@ class LiteLLMService:
             "claude-3-opus": "anthropic",
             "claude-3-haiku": "anthropic",
             "gemini-pro": "google",
-            "gemini-pro-vision": "google"
+            "gemini-pro-vision": "google",
+            # OpenRouter models
+            "openrouter/openai/gpt-4o-mini": "openrouter",
+            "openrouter/openai/gpt-4o": "openrouter",
+            "openrouter/openai/gpt-3.5-turbo": "openrouter",
+            "openrouter/anthropic/claude-3.5-sonnet": "openrouter",
+            "openrouter/anthropic/claude-3-opus": "openrouter",
+            "openrouter/anthropic/claude-3-haiku": "openrouter"
         }
 
         # Performance metrics
@@ -149,7 +156,7 @@ class LiteLLMService:
     def _configure_litellm(self):
         """Configure LiteLLM settings."""
         litellm.set_verbose = settings.LITELLM_LOGGING
-        litellm.cache = settings.LITELLM_CACHE_TTL
+        # litellm.cache = True  # Let Redis service handle caching
         litellm.request_timeout = settings.LITELLM_REQUEST_TIMEOUT
 
         # Set API keys from environment
@@ -158,6 +165,13 @@ class LiteLLMService:
 
         if settings.ANTHROPIC_API_KEY:
             litellm.anthropic_api_key = settings.ANTHROPIC_API_KEY
+
+        # Configure OpenRouter
+        if settings.OPENROUTER_API_KEY:
+            litellm.openrouter_api_key = settings.OPENROUTER_API_KEY
+            # OpenRouter uses OpenAI-compatible format, set as fallback
+            if not settings.OPENAI_API_KEY:
+                litellm.openai_api_key = settings.OPENROUTER_API_KEY
 
         logger.info("LiteLLM configured successfully")
 

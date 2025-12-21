@@ -3,11 +3,16 @@ Pytest configuration and fixtures for Data Foundry tests
 """
 
 import asyncio
+import json
 import os
 import pytest
 import tempfile
+import time
 from contextlib import asynccontextmanager
+from datetime import datetime
+from decimal import Decimal
 from typing import AsyncGenerator, Generator
+from unittest.mock import Mock, AsyncMock, patch
 
 import pytest_asyncio
 from fastapi.testclient import TestClient
@@ -23,6 +28,10 @@ from src.models import (
     TokenUsage, TenantUsage, AuditLog
 )
 from src.services.litellm_service import LiteLLMService
+from src.services.redis_service import RedisService, CacheStatistics, PerformanceMetrics
+from src.core.prompts.prompt_manager import PromptManager
+from src.services.cost_service import CostService
+from src.core.audit import AuditService
 
 
 @pytest.fixture(scope="session")
@@ -488,6 +497,205 @@ def litellm_service():
     """LiteLLM service for testing."""
     service = LiteLLMService()
     return service
+
+
+@pytest_asyncio.fixture
+async def live_redis_service():
+    """Live Redis service for integration tests with real Redis instance."""
+    # Configure Redis service for testing with live instance
+    redis_service = RedisService(
+        url="redis://localhost:6379/0",
+        max_connections=10,
+        retry_attempts=3,
+        retry_delay=0.1,
+        default_ttl=3600,
+        enable_metrics=True
+    )
+
+    try:
+        # Verify Redis is available
+        health_check = await redis_service.health_check()
+        if not health_check:
+            pytest.skip("Redis instance not available at redis://localhost:6379/0")
+
+        # Clear any existing data
+        await redis_service.clear_cache()
+
+        yield redis_service
+
+    except Exception as e:
+        if "Connection refused" in str(e) or "Could not connect" in str(e):
+            pytest.skip(f"Redis instance not available: {e}")
+        else:
+            pytest.fail(f"Redis connection failed: {e}")
+
+    finally:
+        await redis_service.close()
+
+
+@pytest_asyncio.fixture
+async def litellm_integration_setup():
+    """Full LiteLLM service with test configuration and Redis integration."""
+    # Mock cost service to avoid actual API calls
+    with patch('src.services.cost_service.CostService') as mock_cost_service:
+        mock_cost_instance = mock_cost_service.return_value
+        mock_cost_instance.calculate_cost = AsyncMock(return_value=Decimal("0.001"))
+        mock_cost_instance.get_tenant_usage = AsyncMock(return_value=TenantUsage(
+            tenant_id="test_tenant_001",
+            total_cost=Decimal("0.01"),
+            total_tokens=5000,
+            request_count=10,
+            period_start=datetime.utcnow(),
+            period_end=datetime.utcnow()
+        ))
+
+        # Create and initialize LiteLLM service
+        service = LiteLLMService()
+        service._test_connectivity = AsyncMock()  # Mock connectivity test
+        service.cost_service = mock_cost_instance
+
+        await service.initialize()
+
+        yield service
+
+        # Cleanup
+        await service.close()
+
+
+@pytest.fixture
+async def prompt_manager():
+    """Prompt manager with test configuration."""
+    # Skip singleton for tests to ensure clean state
+    return PromptManager(skip_singleton=True)
+
+
+@pytest.fixture
+async def cost_tracking_setup():
+    """Cost calculation service with test pricing models."""
+    with patch('src.services.cost_service.CostService') as mock_cost_service:
+        mock_cost_instance = mock_cost_service.return_value
+
+        # Configure test pricing
+        test_pricing = {
+            "gpt-4o": {"input": Decimal("0.0025"), "output": Decimal("0.01")},
+            "claude-3-5-sonnet": {"input": Decimal("0.003"), "output": Decimal("0.015")},
+            "gpt-4o-mini": {"input": Decimal("0.00015"), "output": Decimal("0.0006")}
+        }
+
+        async def mock_calculate_cost(model, prompt_tokens, completion_tokens, tenant_id):
+            pricing = test_pricing.get(model, test_pricing["gpt-4o"])
+            input_cost = pricing["input"] * (prompt_tokens / 1000)
+            output_cost = pricing["output"] * (completion_tokens / 1000)
+            return input_cost + output_cost
+
+        mock_cost_instance.calculate_cost = mock_calculate_cost
+        yield mock_cost_instance
+
+
+@pytest.fixture
+async def realistic_test_data():
+    """Realistic dataset for workflow testing."""
+    return {
+        "users": [
+            {
+                "name": "John Smith",
+                "email": "john.smith@techcorp.com",
+                "phone": "+1 (555) 123-4567",
+                "department": "Engineering",
+                "title": "Senior Software Engineer",
+                "location": "San Francisco, CA"
+            },
+            {
+                "name": "Sarah Johnson",
+                "email": "sarah.johnson@finance.co",
+                "phone": "+1 (555) 987-6543",
+                "department": "Finance",
+                "title": "Financial Analyst",
+                "location": "New York, NY"
+            },
+            {
+                "name": "Michael Chen",
+                "email": "michael.chen@marketing.io",
+                "phone": "+1 (555) 456-7890",
+                "department": "Marketing",
+                "title": "Marketing Director",
+                "location": "Chicago, IL"
+            },
+            {
+                "name": "Emily Davis",
+                "email": "emily.davis@healthcare.org",
+                "phone": "+1 (555) 321-0987",
+                "department": "Healthcare",
+                "title": "Clinical Research Coordinator",
+                "location": "Boston, MA"
+            },
+            {
+                "name": "Robert Wilson",
+                "email": "robert.wilson@edu.edu",
+                "phone": "+1 (555) 654-3210",
+                "department": "Education",
+                "title": "Professor",
+                "location": "Austin, TX"
+            }
+        ],
+        "categories": [
+            "corporate_executive",
+            "healthcare_professional",
+            "educational_institution",
+            "tech_company",
+            "financial_services",
+            "marketing_agency",
+            "research_organization",
+            "government_agency"
+        ],
+        "confidence_thresholds": {
+            "high_confidence": 0.9,
+            "medium_confidence": 0.7,
+            "low_confidence": 0.5
+        }
+    }
+
+
+@pytest.fixture
+def mock_ai_response():
+    """Mock AI response for testing."""
+    return {
+        "choices": [{
+            "message": {
+                "content": json.dumps({
+                    "category": "corporate_executive",
+                    "confidence": 0.95,
+                    "priority": "high",
+                    "reasoning": "Senior executive at tech company with complete contact information",
+                    "metadata": {
+                        "department": "Engineering",
+                        "seniority": "Senior",
+                        "location": "San Francisco"
+                    }
+                })
+            }
+        }],
+        "usage": {
+            "prompt_tokens": 350,
+            "completion_tokens": 280,
+            "total_tokens": 630
+        }
+    }
+
+
+@pytest.fixture
+def workflow_test_config():
+    """Configuration for workflow testing."""
+    return {
+        "cache_ttl": 3600,  # 1 hour
+        "max_retries": 3,
+        "retry_delay": 0.5,
+        "confidence_threshold": 0.85,
+        "batch_size": 5,
+        "parallel_requests": 3,
+        "performance_target_seconds": 30,
+        "cache_hit_rate_target": 0.8
+    }
 
 
 @pytest.fixture
