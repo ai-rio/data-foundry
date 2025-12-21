@@ -284,6 +284,16 @@ class CostService:
             "total_calculation_time": 0
         }
 
+        # Public attributes for tests
+        # Pricing rules - alias to _model_pricing
+        self.pricing_rules = self._model_pricing
+
+        # Tenant balances tracking
+        self.tenant_balances: Dict[str, Decimal] = {}
+
+        # Alert thresholds per tenant
+        self.alert_thresholds: Dict[str, Dict[str, Decimal]] = {}
+
     def _generate_cache_key(
         self,
         model: str,

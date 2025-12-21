@@ -542,6 +542,40 @@ async def live_redis_service():
 
 
 @pytest_asyncio.fixture
+async def redis_service():
+    """Redis service fixture for integration tests - alias to live_redis_service."""
+    # Configure Redis service for testing with live instance
+    redis_service = RedisService(
+        url="redis://localhost:6379/0",
+        max_connections=10,
+        retry_attempts=3,
+        retry_delay=0.1,
+        default_ttl=3600,
+        enable_metrics=True
+    )
+
+    try:
+        # Verify Redis is available
+        health_check = await redis_service.health_check()
+        if not health_check:
+            pytest.skip("Redis instance not available at redis://localhost:6379/0")
+
+        # Clear any existing data
+        await redis_service.clear_cache()
+
+        yield redis_service
+
+    except Exception as e:
+        if "Connection refused" in str(e) or "Could not connect" in str(e):
+            pytest.skip(f"Redis instance not available: {e}")
+        else:
+            pytest.fail(f"Redis connection failed: {e}")
+
+    finally:
+        await redis_service.close()
+
+
+@pytest_asyncio.fixture
 async def litellm_integration_setup():
     """Full LiteLLM service with test configuration and Redis integration."""
     # Mock cost service to avoid actual API calls

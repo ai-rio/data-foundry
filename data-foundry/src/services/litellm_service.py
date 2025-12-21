@@ -117,6 +117,12 @@ class LiteLLMService:
             "openrouter/anthropic/claude-3-haiku": "openrouter"
         }
 
+        # Supported providers - public attribute for tests
+        self.supported_providers = list(set(self._provider_mappings.values()))
+
+        # Model mappings - public attribute for tests
+        self.model_mappings = self._provider_mappings.copy()
+
         # Performance metrics
         self._metrics = {
             "requests_total": 0,

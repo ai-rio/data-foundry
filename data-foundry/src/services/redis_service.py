@@ -213,6 +213,12 @@ class RedisService:
         self._stats = CacheStatistics()
         self._metrics = PerformanceMetrics() if enable_metrics else None
 
+        # Alias for tests that expect redis_client attribute
+        self.redis_client = self.connection_pool
+
+        # TTL attribute for tests
+        self.ttl = self.default_ttl
+
     async def get(self, key: str) -> Any:
         """
         Get a value from Redis.
