@@ -20,12 +20,14 @@ from dataclasses import dataclass
 from contextlib import asynccontextmanager
 
 try:
-    import aioredis
-    from aioredis import Redis, ConnectionPool
+    import redis.asyncio as aioredis
+    from redis.asyncio import Redis, ConnectionPool
+    AIREDIS_AVAILABLE = True
 except ImportError:
     aioredis = None
     Redis = None
     ConnectionPool = None
+    AIREDIS_AVAILABLE = False
 
 from .config import get_settings
 
@@ -255,8 +257,8 @@ class RedisConnectionPool:
         Raises:
             CacheConnectionError: If connection fails
         """
-        if aioredis is None:
-            raise CacheConnectionError("aioredis is not installed. Install with: pip install aioredis")
+        if not AIREDIS_AVAILABLE:
+            raise CacheConnectionError("redis[hiredis] is not installed. Install with: uv add redis[hiredis]")
 
         if self._client is None:
             with self._lock:
