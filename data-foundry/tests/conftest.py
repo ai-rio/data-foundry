@@ -31,7 +31,7 @@ from src.services.litellm_service import LiteLLMService
 from src.services.redis_service import RedisService, CacheStatistics, PerformanceMetrics
 from src.core.prompts.prompt_manager import PromptManager
 from src.services.cost_service import CostService
-from src.core.audit import AuditService
+# AuditService not available in audit module - using AuditLogger instead
 
 
 @pytest.fixture(scope="session")
@@ -47,6 +47,14 @@ def test_settings() -> Settings:
     """Test settings that override production values."""
     # Override environment variables for testing
     original_settings = get_settings()
+
+    # Load real OpenRouter API key from .env.local for TRUE integration tests
+    import os
+    from dotenv import load_dotenv
+
+    # Load .env.local to get the real OpenRouter API key
+    if os.path.exists(".env.local"):
+        load_dotenv(dotenv_path=".env.local", override=True)
 
     # Create a new settings instance with test values
     test_settings = Settings(

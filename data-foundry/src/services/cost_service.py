@@ -33,6 +33,7 @@ class AIProvider(str, Enum):
     PERPLEXITY = "perplexity"
     TOGETHER = "together"
     FIREWORKS = "fireworks"
+    OPENROUTER = "openrouter"
 
 
 class ModelPricing:
@@ -587,6 +588,37 @@ class CostService:
                 context_window=128000,
                 capabilities=["text", "function_calling", "rag"],
                 training_data_cutoff=datetime(2024, 2, 1)
+            ),
+        })
+
+        # OpenRouter pricing (OpenAI models via OpenRouter)
+        self._model_pricing.update({
+            "openrouter/openai/gpt-4o-mini": ModelPricing(
+                provider=AIProvider.OPENROUTER,
+                model="openrouter/openai/gpt-4o-mini",
+                input_token_cost=Decimal("0.00015"),  # $0.00015 per 1K tokens
+                output_token_cost=Decimal("0.0006"),   # $0.0006 per 1K tokens
+                context_window=128000,
+                capabilities=["text", "vision", "function_calling", "json_mode"],
+                training_data_cutoff=datetime(2024, 7, 1)
+            ),
+            "openrouter/anthropic/claude-3.5-sonnet": ModelPricing(
+                provider=AIProvider.OPENROUTER,
+                model="openrouter/anthropic/claude-3.5-sonnet",
+                input_token_cost=Decimal("0.0003"),   # $0.0003 per 1K tokens
+                output_token_cost=Decimal("0.0015"),  # $0.0015 per 1K tokens
+                context_window=200000,
+                capabilities=["text", "function_calling", "json_mode"],
+                training_data_cutoff=datetime(2024, 6, 1)
+            ),
+            "openrouter/openai/gpt-4o": ModelPricing(
+                provider=AIProvider.OPENROUTER,
+                model="openrouter/openai/gpt-4o",
+                input_token_cost=Decimal("0.0025"),   # $0.0025 per 1K tokens
+                output_token_cost=Decimal("0.01"),    # $0.01 per 1K tokens
+                context_window=128000,
+                capabilities=["text", "vision", "function_calling", "json_mode"],
+                training_data_cutoff=datetime(2024, 7, 1)
             ),
         })
 

@@ -18,6 +18,14 @@ from typing import Any, Dict, Optional, Callable, Union, TypeVar, cast
 from functools import wraps
 from dataclasses import dataclass
 from contextlib import asynccontextmanager
+from decimal import Decimal
+
+class CustomJSONEncoder(json.JSONEncoder):
+    """Custom JSON encoder that handles Decimal objects."""
+    def default(self, obj):
+        if isinstance(obj, Decimal):
+            return str(obj)
+        return super().default(obj)
 
 try:
     import redis.asyncio as aioredis
@@ -160,9 +168,13 @@ class CacheSerializer:
                 return str(value)
             elif isinstance(value, bytes):
                 return value.decode('utf-8')
-            else:
-                # Use JSON for complex objects
-                return json.dumps(value, ensure_ascii=False, separators=(',', ':'))
+
+            # Handle Decimal objects
+            if isinstance(value, Decimal):
+                return str(value)
+
+            # Use JSON for complex objects
+            return json.dumps(value, ensure_ascii=False, separators=(',', ':'), cls=CustomJSONEncoder)
         except (TypeError, ValueError, UnicodeDecodeError) as e:
             raise CacheSerializationError(f"Failed to serialize value: {e}") from e
 
@@ -189,7 +201,16 @@ class CacheSerializer:
 
             # Try to parse as JSON first
             if value.startswith(('{', '[', '"')) or value in ('true', 'false', 'null'):
-                return json.loads(value)
+                parsed_value = json.loads(value)
+
+                # Check if this is a simple Decimal value stored as string
+                if isinstance(parsed_value, str) and len(parsed_value) > 0:
+                    try:
+                        return Decimal(parsed_value)
+                    except:
+                        pass
+
+                return parsed_value
 
             # Try to parse as number
             try:
