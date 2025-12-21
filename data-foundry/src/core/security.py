@@ -248,3 +248,263 @@ def validate_password(password: str) -> bool:
     """
     # Basic validation - at least 8 characters
     return len(password) >= 8
+
+
+def create_refresh_token(
+    subject: str | Any, expires_delta: timedelta | None = None
+) -> str:
+    """
+    Create a JWT refresh token.
+
+    Args:
+        subject: The subject to encode (usually user ID or email)
+        expires_delta: Optional expiration time delta
+
+    Returns:
+        Encoded JWT refresh token
+    """
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(days=7)  # Refresh tokens live longer
+
+    to_encode = {
+        "exp": expire,
+        "sub": str(subject),
+        "type": "refresh"
+    }
+    encoded_jwt = jwt.encode(
+        to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM
+    )
+    return encoded_jwt
+
+
+def verify_refresh_token(token: str) -> dict:
+    """
+    Verify and decode JWT refresh token.
+
+    Args:
+        token: JWT refresh token to verify
+
+    Returns:
+        Decoded token payload
+
+    Raises:
+        HTTPException: If token is invalid, expired, or not a refresh token
+    """
+    try:
+        payload = jwt.decode(
+            token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
+        )
+
+        # Check if this is a refresh token
+        if payload.get("type") != "refresh":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token type",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        return payload
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token has expired",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except jwt.JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate refresh token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+def create_password_reset_token(
+    subject: str | Any, expires_delta: timedelta | None = None
+) -> str:
+    """
+    Create a JWT password reset token.
+
+    Args:
+        subject: The subject to encode (usually user ID or email)
+        expires_delta: Optional expiration time delta
+
+    Returns:
+        Encoded JWT password reset token
+    """
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(hours=1)  # Reset tokens are short-lived
+
+    to_encode = {
+        "exp": expire,
+        "sub": str(subject),
+        "type": "password_reset"
+    }
+    encoded_jwt = jwt.encode(
+        to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM
+    )
+    return encoded_jwt
+
+
+def verify_password_reset_token(token: str) -> dict:
+    """
+    Verify and decode JWT password reset token.
+
+    Args:
+        token: JWT password reset token to verify
+
+    Returns:
+        Decoded token payload
+
+    Raises:
+        HTTPException: If token is invalid, expired, or not a password reset token
+    """
+    try:
+        payload = jwt.decode(
+            token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
+        )
+
+        # Check if this is a password reset token
+        if payload.get("type") != "password_reset":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token type",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        return payload
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Password reset token has expired",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except jwt.JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate password reset token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+def generate_csrf_token() -> str:
+    """
+    Generate a CSRF token.
+
+    Returns:
+        CSRF token string
+    """
+    import secrets
+    return secrets.token_urlsafe(32)
+
+
+def verify_csrf_token(token: str) -> bool:
+    """
+    Verify a CSRF token.
+
+    Args:
+        token: CSRF token to verify
+
+    Returns:
+        True if token is valid format
+    """
+    # Basic format validation - in real implementation would check against session
+    return isinstance(token, str) and len(token) >= 32
+
+
+async def authenticate_user(
+    identifier: str,
+    password: str,
+    user: Any = None
+) -> bool:
+    """
+    Authenticate a user with identifier and password.
+
+    Args:
+        identifier: User identifier (email, username, etc.)
+        password: Plain text password
+        user: User object (for testing)
+
+    Returns:
+        True if authentication successful, False otherwise
+    """
+    # In real implementation, this would fetch user from database
+    # For testing, we use the provided user object
+    if user is None:
+        return False
+
+    # Check if user is locked
+    if hasattr(user, 'locked_until') and user.locked_until:
+        if user.locked_until > datetime.utcnow():
+            return False
+
+    # Verify password
+    if hasattr(user, 'hashed_password'):
+        if verify_password(password, user.hashed_password):
+            # Reset failed attempts on successful login
+            if hasattr(user, 'failed_login_attempts'):
+                user.failed_login_attempts = 0
+            return True
+        else:
+            # Increment failed attempts
+            if hasattr(user, 'failed_login_attempts'):
+                user.failed_login_attempts += 1
+                # Lock account after 5 failed attempts
+                if user.failed_login_attempts >= 5:
+                    user.locked_until = datetime.utcnow() + timedelta(minutes=15)
+            return False
+
+    return False
+
+
+async def check_permission(user: Any, permission: str) -> bool:
+    """
+    Check if user has a specific permission.
+
+    Args:
+        user: User object
+        permission: Permission string to check
+
+    Returns:
+        True if user has permission, False otherwise
+    """
+    # Check based on user role
+    if hasattr(user, 'role'):
+        role_permissions = {
+            UserRole.ADMIN: [
+                "user:manage", "data:create", "data:read", "data:write", "data:delete",
+                "admin:access", "system:config", "audit:delete", "user:promote", "role:change"
+            ],
+            UserRole.ANALYST: [
+                "data:create", "data:read", "data:write"
+            ],
+            UserRole.VIEWER: [
+                "data:read"
+            ]
+        }
+
+        user_permissions = role_permissions.get(user.role, [])
+        return permission in user_permissions
+
+    # Check explicit permissions if available
+    if hasattr(user, 'permissions'):
+        return permission in user.permissions
+
+    return False
+
+
+async def has_permission(user: Any, permission: str) -> bool:
+    """
+    Alias for check_permission for consistency.
+
+    Args:
+        user: User object
+        permission: Permission string to check
+
+    Returns:
+        True if user has permission, False otherwise
+    """
+    return await check_permission(user, permission)

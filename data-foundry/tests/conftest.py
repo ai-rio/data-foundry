@@ -18,7 +18,11 @@ from sqlmodel import Session
 from src.main import app
 from src.core.config import Settings, get_settings
 from src.database.connection import db_connection, DatabaseConnection
-from src.models import User, Tenant, DataRecord, ProcessedData, HumanReviewQueue
+from src.models import (
+    User, Tenant, DataRecord, ProcessedData, HumanReviewQueue,
+    TokenUsage, TenantUsage, AuditLog
+)
+from src.services.litellm_service import LiteLLMService
 
 
 @pytest.fixture(scope="session")
@@ -477,6 +481,32 @@ def pii_sample_data():
             "address": "456 Oak Ave, Somewhere, USA",
         },
     ]
+
+
+@pytest.fixture
+def litellm_service():
+    """LiteLLM service for testing."""
+    service = LiteLLMService()
+    return service
+
+
+@pytest.fixture
+def ai_request_data():
+    """Sample AI request data for testing."""
+    return {
+        "prompt": "Analyze customer data: {'name': 'John Doe', 'email': 'john@corp.com'}",
+        "system_prompt": "You are a data labeling expert. Classify customers and provide confidence scores.",
+        "model": "gpt-4o",
+        "temperature": 0.3,
+        "max_tokens": 500,
+        "tenant_id": "test_tenant_001",
+        "user_id": "test_user_001",
+        "request_id": "test_req_001",
+        "metadata": {
+            "record_id": "rec_001",
+            "data_source": "csv"
+        }
+    }
 
 
 # Test markers

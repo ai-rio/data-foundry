@@ -916,7 +916,8 @@ class TestFinancialAccuracy:
             ])
             assert result == expected
 
-    def test_no_floating_point_errors(self):
+    @pytest.mark.asyncio
+    async def test_no_floating_point_errors(self):
         """FAIL: Test no floating point precision errors in calculations."""
         # This should use Decimal throughout, never float
         cost = await self.cost_service.calculate_cost(

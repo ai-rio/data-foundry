@@ -2,6 +2,16 @@
 
 import pytest
 from unittest.mock import Mock, patch, MagicMock
+from datetime import datetime, timedelta
+from decimal import Decimal
+
+from src.models import (
+    User, Tenant, DataRecord, ProcessedData, HumanReviewQueue,
+    TokenUsage, TenantUsage, AuditLog, CostAlert, BillingEvent
+)
+from src.models.user import UserRole, UserStatus
+from src.models.tenant import TenantStatus
+from src.models.data_record import DataSource, DataStatus
 
 
 def test_confidence_routing_logic():
@@ -234,6 +244,278 @@ def test_error_handling():
     # Test without Presidio
     result = safe_pii_redaction(test_record, presidio_available=False)
     assert result["name"] == "Test"  # Should remain unchanged
+
+
+class TestEnhancedDataModels:
+    """Test enhanced data models with new features."""
+
+    def test_user_model_enhancements(self):
+        """Test User model with enhanced features."""
+        user = User(
+            user_id="test_user_001",
+            email="user@test.com",
+            tenant_id="test_tenant_001",
+            hashed_password="hashed_password",
+            role=UserRole.ADMIN,
+            status=UserStatus.ACTIVE,
+            first_name="Test",
+            last_name="User",
+            can_create_data=True,
+            can_view_data=True,
+            can_modify_data=True,
+            can_delete_data=True,
+            can_manage_users=True,
+            mfa_enabled=True,
+            last_login=datetime.utcnow(),
+            failed_login_attempts=0,
+            locked_until=None,
+            preferences={"theme": "dark", "notifications": True},
+            permissions=["data:read", "data:write", "user:manage"]
+        )
+
+        # Test enhanced fields
+        assert user.mfa_enabled is True
+        assert user.last_login is not None
+        assert user.failed_login_attempts == 0
+        assert user.locked_until is None
+        assert user.preferences is not None
+        assert user.permissions is not None
+
+    def test_tenant_model_enhancements(self):
+        """Test Tenant model with billing and feature flags."""
+        tenant = Tenant(
+            tenant_id="test_tenant_001",
+            name="Test Organization",
+            status=TenantStatus.ACTIVE,
+            max_users=100,
+            max_data_records=1000000,
+            storage_limit_gb=100.0,
+            enable_pii_redaction=True,
+            enable_ai_labeling=True,
+            enable_human_review=True,
+            billing_plan="premium",
+            billing_status="active",
+            subscription_tier="enterprise",
+            feature_flags={
+                "advanced_analytics": True,
+                "data_export": True,
+                "custom_models": False
+            },
+            credit_limit=Decimal("1000.00"),
+            trial_end_date=datetime.utcnow() + timedelta(days=30),
+            custom_settings={
+                "confidence_threshold": 0.85,
+                "batch_size": 1000
+            }
+        )
+
+        # Test enhanced billing features
+        assert tenant.billing_plan == "premium"
+        assert tenant.billing_status == "active"
+        assert tenant.subscription_tier == "enterprise"
+        assert tenant.credit_limit == Decimal("1000.00")
+        assert tenant.trial_end_date is not None
+        assert tenant.feature_flags is not None
+        assert tenant.custom_settings is not None
+
+    def test_data_record_enhancements(self):
+        """Test DataRecord with enhanced AI tracking."""
+        record = DataRecord(
+            record_id="enhanced_rec_001",
+            tenant_id="test_tenant_001",
+            data_source=DataSource.CSV,
+            status=DataStatus.PROCESSED,
+            raw_data='{"name": "John Doe", "email": "john@corp.com"}',
+            ai_metadata={
+                "confidence_score": 0.95,
+                "category": "high_value",
+                "model_used": "gpt-4o",
+                "processing_time_ms": 450,
+                "tokens_used": 150,
+                "cost_estimate": Decimal("0.001")
+            },
+            tags=["enterprise", "high_confidence"],
+            validation_status="valid",
+            validation_details={
+                "pii_detected": True,
+                "pii_types": ["EMAIL"],
+                "data_quality_score": 0.98
+            },
+            processed_at=datetime.utcnow(),
+            processing_tenant_id="test_tenant_001",
+            processing_user_id="test_user_001"
+        )
+
+        # Test enhanced AI tracking
+        assert "ai_metadata" in record.raw_data
+        assert record.ai_metadata is not None
+        assert record.ai_metadata["confidence_score"] == 0.95
+        assert record.ai_metadata["model_used"] == "gpt-4o"
+        assert record.ai_metadata["tokens_used"] == 150
+        assert record.ai_metadata["cost_estimate"] == Decimal("0.001")
+
+        # Test validation features
+        assert record.validation_status == "valid"
+        assert record.validation_details is not None
+        assert record.validation_details["pii_detected"] is True
+        assert record.validation_details["data_quality_score"] == 0.98
+
+    def test_token_usage_tracking(self):
+        """Test TokenUsage model."""
+        token_usage = TokenUsage(
+            token_id="tok_001",
+            tenant_id="test_tenant_001",
+            user_id="test_user_001",
+            model="gpt-4o",
+            provider="openai",
+            prompt_tokens=100,
+            completion_tokens=50,
+            total_tokens=150,
+            cost_per_token_input=Decimal("0.00001"),
+            cost_per_token_output=Decimal("0.00002"),
+            total_cost=Decimal("0.002"),
+            request_timestamp=datetime.utcnow(),
+            metadata={
+                "session_id": "sess_001",
+                "task": "data_labeling"
+            }
+        )
+
+        # Test token usage tracking
+        assert token_usage.prompt_tokens == 100
+        assert token_usage.completion_tokens == 50
+        assert token_usage.total_tokens == 150
+        assert token_usage.cost_per_token_input == Decimal("0.00001")
+        assert token_usage.cost_per_token_output == Decimal("0.00002")
+        assert token_usage.total_cost == Decimal("0.002")
+        assert token_usage.metadata is not None
+
+    def test_tenant_usage_tracking(self):
+        """Test TenantUsage model."""
+        tenant_usage = TenantUsage(
+            usage_id="usage_001",
+            tenant_id="test_tenant_001",
+            period_start=datetime.utcnow().replace(day=1),
+            period_end=datetime.utcnow().replace(day=28),
+            total_tokens_used=100000,
+            total_cost=Decimal("50.00"),
+            ai_requests_count=1000,
+            data_records_processed=5000,
+            storage_usage_gb=75.5,
+            feature_usage={
+                "ai_labeling": 800,
+                "pii_redaction": 950,
+                "human_review": 200
+            },
+            billing_alerts=[
+                {
+                    "type": "cost_threshold",
+                    "threshold": Decimal("40.00"),
+                    "triggered_at": datetime.utcnow()
+                }
+            ]
+        )
+
+        # Test tenant usage tracking
+        assert tenant_usage.total_tokens_used == 100000
+        assert tenant_usage.total_cost == Decimal("50.00")
+        assert tenant_usage.ai_requests_count == 1000
+        assert tenant_usage.data_records_processed == 5000
+        assert tenant_usage.feature_usage is not None
+        assert tenant_usage.billing_alerts is not None
+
+    def test_audit_log_enhancements(self):
+        """Test AuditLog model with enhanced details."""
+        audit_log = AuditLog(
+            log_id="audit_001",
+            tenant_id="test_tenant_001",
+            user_id="test_user_001",
+            action="data_record_create",
+            resource_type="DataRecord",
+            resource_id="rec_001",
+            timestamp=datetime.utcnow(),
+            ip_address="192.168.1.100",
+            user_agent="Mozilla/5.0",
+            details={
+                "record_data": {"name": "John Doe", "email": "john@corp.com"},
+                "ai_confidence": 0.95,
+                "processing_time_ms": 450,
+                "tokens_used": 150,
+                "cost": Decimal("0.001")
+            },
+            risk_level="low",
+            related_events=["evt_001", "evt_002"]
+        )
+
+        # Test audit log enhancements
+        assert audit_log.action == "data_record_create"
+        assert audit_log.details is not None
+        assert audit_log.details["ai_confidence"] == 0.95
+        assert audit_log.details["tokens_used"] == 150
+        assert audit_log.details["cost"] == Decimal("0.001")
+        assert audit_log.risk_level == "low"
+        assert audit_log.related_events is not None
+
+    def test_cost_alert_system(self):
+        """Test CostAlert model."""
+        cost_alert = CostAlert(
+            alert_id="alert_001",
+            tenant_id="test_tenant_001",
+            alert_type="cost_threshold",
+            severity="warning",
+            threshold_amount=Decimal("100.00"),
+            current_amount=Decimal("95.00"),
+            percentage_threshold=80.0,
+            triggered_at=datetime.utcnow(),
+            details={
+                "period": "monthly",
+                "ai_service_cost": Decimal("75.00"),
+                "storage_cost": Decimal("20.00"),
+                "alert_message": "Monthly cost approaching threshold"
+            },
+            acknowledged=False,
+            acknowledged_by=None,
+            acknowledged_at=None
+        )
+
+        # Test cost alert features
+        assert cost_alert.alert_type == "cost_threshold"
+        assert cost_alert.severity == "warning"
+        assert cost_alert.threshold_amount == Decimal("100.00")
+        assert cost_alert.current_amount == Decimal("95.00")
+        assert cost_alert.percentage_threshold == 80.0
+        assert cost_alert.details is not None
+        assert cost_alert.acknowledged is False
+
+    def test_billing_event_tracking(self):
+        """Test BillingEvent model."""
+        billing_event = BillingEvent(
+            event_id="bill_001",
+            tenant_id="test_tenant_001",
+            event_type="ai_usage",
+            description="GPT-4 token usage",
+            amount=Decimal("5.00"),
+            currency="USD",
+            timestamp=datetime.utcnow(),
+            metadata={
+                "model": "gpt-4o",
+                "provider": "openai",
+                "tokens": 5000,
+                "unit_cost": Decimal("0.00001")
+            },
+            status="pending",
+            invoice_id=None,
+            batch_id="batch_001"
+        )
+
+        # Test billing event tracking
+        assert billing_event.event_type == "ai_usage"
+        assert billing_event.amount == Decimal("5.00")
+        assert billing_event.currency == "USD"
+        assert billing_event.metadata is not None
+        assert billing_event.metadata["model"] == "gpt-4o"
+        assert billing_event.metadata["tokens"] == 5000
+        assert billing_event.status == "pending"
 
 
 if __name__ == "__main__":
