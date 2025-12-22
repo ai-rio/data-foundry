@@ -1,0 +1,6 @@
+#!/bin/bash
+# Git Flow Manager - Convenient wrapper
+# Usage: ./git-flow [command] [options]
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+"$SCRIPT_DIR/.git/hooks/git-flow-manager.sh" "$@"
