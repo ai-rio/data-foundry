@@ -193,3 +193,6 @@ logs/
 # Temp files
 tmp/
 temp/
+
+# test results 
+results/
