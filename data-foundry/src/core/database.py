@@ -106,7 +106,8 @@ class DatabaseManager:
             "tenants": {},
             "usage": [],
             "audit_records": [],
-            "billing_events": []
+            "billing_events": [],
+            "consent_records": []
         }
         logger.info("Using mock database for persistence")
 
@@ -146,6 +147,28 @@ class DatabaseManager:
 
                 CREATE INDEX IF NOT EXISTS idx_usage_tenant_date ON usage_records(tenant_id, calculation_date);
                 CREATE INDEX IF NOT EXISTS idx_usage_model ON usage_records(model);
+
+                -- Consent records table for GDPR compliance
+                CREATE TABLE IF NOT EXISTS consent_records (
+                    id SERIAL PRIMARY KEY,
+                    user_id VARCHAR(255) NOT NULL,
+                    consent_type VARCHAR(255) NOT NULL,
+                    consent_text TEXT NOT NULL,
+                    granted_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                    ip_address VARCHAR(255) NOT NULL,
+                    user_agent TEXT,
+                    status VARCHAR(50) NOT NULL DEFAULT 'active',
+                    withdrawn_at TIMESTAMP WITH TIME ZONE,
+                    consent_metadata JSONB DEFAULT '{}',
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                );
+
+                -- Indexes for consent record queries
+                CREATE INDEX IF NOT EXISTS idx_consent_user_type ON consent_records(user_id, consent_type);
+                CREATE INDEX IF NOT EXISTS idx_consent_status ON consent_records(status);
+                CREATE INDEX IF NOT EXISTS idx_consent_granted_at ON consent_records(granted_at);
+                CREATE INDEX IF NOT EXISTS idx_consent_user_status ON consent_records(user_id, status);
 
                 -- Additional tables for audit, billing, etc.
             """
@@ -453,6 +476,331 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Failed to get usage report for {tenant_id}: {str(e)}")
             return []
+
+    # Consent Management Methods
+
+    async def create_consent_record(self, record) -> int:
+        """
+        Create a new consent record in the database.
+
+        Args:
+            record: ConsentRecord domain model or ConsentRecordDB model
+
+        Returns:
+            The ID of the created record
+        """
+        await self.initialize()
+
+        try:
+            if hasattr(self, '_mock_data'):
+                # Mock database
+                consent_data = {
+                    "id": len(self._mock_data["consent_records"]) + 1,
+                    "user_id": record.user_id,
+                    "consent_type": record.consent_type,
+                    "consent_text": record.consent_text,
+                    "granted_at": record.granted_at,
+                    "ip_address": record.ip_address,
+                    "user_agent": record.user_agent,
+                    "status": record.status.value if hasattr(record.status, 'value') else record.status,
+                    "withdrawn_at": record.withdrawn_at,
+                    "consent_metadata": record.metadata if hasattr(record, 'metadata') else getattr(record, 'consent_metadata', {}),
+                    "created_at": datetime.utcnow(),
+                    "updated_at": datetime.utcnow()
+                }
+                self._mock_data["consent_records"].append(consent_data)
+                logger.info(f"Created consent record {consent_data['id']} for user {record.user_id}")
+                return consent_data["id"]
+
+            elif self._connection_pool:
+                # Real database
+                async with self._connection_pool.acquire() as conn:
+                    record_id = await conn.fetchval(
+                        """
+                        INSERT INTO consent_records (
+                            user_id, consent_type, consent_text, granted_at,
+                            ip_address, user_agent, status, withdrawn_at,
+                            consent_metadata, created_at, updated_at
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                        RETURNING id
+                        """,
+                        record.user_id,
+                        record.consent_type,
+                        record.consent_text,
+                        record.granted_at,
+                        record.ip_address,
+                        record.user_agent,
+                        record.status.value if hasattr(record.status, 'value') else record.status,
+                        record.withdrawn_at,
+                        record.metadata if hasattr(record, 'metadata') else getattr(record, 'consent_metadata', {}),
+                        datetime.utcnow(),
+                        datetime.utcnow()
+                    )
+                    logger.info(f"Created consent record {record_id} for user {record.user_id}")
+                    return record_id
+
+        except Exception as e:
+            logger.error(f"Failed to create consent record: {str(e)}")
+            raise
+
+    async def get_active_consent(self, user_id: str, consent_type: str):
+        """
+        Get the most recent active consent for a user and type.
+
+        Args:
+            user_id: User identifier
+            consent_type: Type of consent
+
+        Returns:
+            ConsentRecord domain model if found, None otherwise
+        """
+        await self.initialize()
+
+        try:
+            from src.models.enums import ConsentStatus
+            from src.core.consent_manager import ConsentRecord
+
+            if hasattr(self, '_mock_data'):
+                # Mock database
+                user_consents = [
+                    record for record in self._mock_data["consent_records"]
+                    if record["user_id"] == user_id and
+                       record["consent_type"] == consent_type and
+                       record["status"] == "active"
+                ]
+
+                if user_consents:
+                    # Return the most recent active consent as a ConsentRecord
+                    latest = max(user_consents, key=lambda x: x["granted_at"])
+
+                    # Create ConsentRecord domain object
+                    return ConsentRecord(
+                        user_id=latest["user_id"],
+                        consent_type=latest["consent_type"],
+                        consent_text=latest["consent_text"],
+                        granted_at=latest["granted_at"],
+                        ip_address=latest["ip_address"],
+                        user_agent=latest["user_agent"],
+                        status=ConsentStatus.ACTIVE,
+                        withdrawn_at=latest["withdrawn_at"],
+                        metadata=latest["consent_metadata"]
+                    )
+                return None
+
+            elif self._connection_pool:
+                # Real database
+                async with self._connection_pool.acquire() as conn:
+                    row = await conn.fetchrow(
+                        """
+                        SELECT *
+                        FROM consent_records
+                        WHERE user_id = $1
+                        AND consent_type = $2
+                        AND status = 'active'
+                        ORDER BY granted_at DESC
+                        LIMIT 1
+                        """,
+                        user_id,
+                        consent_type
+                    )
+
+                    if row:
+                        # Convert database row to ConsentRecord domain object
+                        return ConsentRecord(
+                            user_id=row["user_id"],
+                            consent_type=row["consent_type"],
+                            consent_text=row["consent_text"],
+                            granted_at=row["granted_at"],
+                            ip_address=row["ip_address"],
+                            user_agent=row["user_agent"],
+                            status=ConsentStatus(row["status"]),
+                            withdrawn_at=row["withdrawn_at"],
+                            metadata=row["consent_metadata"] or {}
+                        )
+                    return None
+
+        except Exception as e:
+            logger.error(f"Failed to get active consent for {user_id}: {str(e)}")
+            return None
+
+    async def update_consent_record(self, record) -> bool:
+        """
+        Update an existing consent record.
+
+        Args:
+            record: ConsentRecord domain model with updates
+
+        Returns:
+            True if update successful, False otherwise
+        """
+        await self.initialize()
+
+        try:
+            if hasattr(self, '_mock_data'):
+                # Mock database
+                for idx, existing in enumerate(self._mock_data["consent_records"]):
+                    if (existing["user_id"] == record.user_id and
+                        existing["consent_type"] == record.consent_type and
+                        existing["status"] == "active"):
+
+                        # Update the record
+                        self._mock_data["consent_records"][idx].update({
+                            "status": record.status.value if hasattr(record.status, 'value') else record.status,
+                            "withdrawn_at": record.withdrawn_at,
+                            "updated_at": datetime.utcnow()
+                        })
+                        logger.info(f"Updated consent record for user {record.user_id}")
+                        return True
+                return False
+
+            elif self._connection_pool:
+                # Real database
+                async with self._connection_pool.acquire() as conn:
+                    result = await conn.execute(
+                        """
+                        UPDATE consent_records
+                        SET status = $1,
+                            withdrawn_at = $2,
+                            updated_at = $3
+                        WHERE user_id = $4
+                        AND consent_type = $5
+                        AND status = 'active'
+                        """,
+                        record.status.value if hasattr(record.status, 'value') else record.status,
+                        record.withdrawn_at,
+                        datetime.utcnow(),
+                        record.user_id,
+                        record.consent_type
+                    )
+                    # Check if any rows were updated
+                    updated = result != "UPDATE 0"
+                    if updated:
+                        logger.info(f"Updated consent record for user {record.user_id}")
+                    return updated
+
+        except Exception as e:
+            logger.error(f"Failed to update consent record: {str(e)}")
+            return False
+
+    async def get_consent_history(self, user_id: str, consent_type: str = None) -> List:
+        """
+        Get consent history for a user.
+
+        Args:
+            user_id: User identifier
+            consent_type: Optional consent type filter
+
+        Returns:
+            List of ConsentRecordDB models (database representation)
+        """
+        await self.initialize()
+
+        try:
+            if hasattr(self, '_mock_data'):
+                # Mock database
+                records = [
+                    record for record in self._mock_data["consent_records"]
+                    if record["user_id"] == user_id
+                ]
+
+                if consent_type:
+                    records = [r for r in records if r["consent_type"] == consent_type]
+
+                # Sort by granted_at descending
+                records.sort(key=lambda x: x["granted_at"], reverse=True)
+
+                # Create database-like objects (for history, we keep database format)
+                from types import SimpleNamespace
+                return [
+                    SimpleNamespace(
+                        id=r["id"],
+                        user_id=r["user_id"],
+                        consent_type=r["consent_type"],
+                        consent_text=r["consent_text"],
+                        granted_at=r["granted_at"],
+                        ip_address=r["ip_address"],
+                        user_agent=r["user_agent"],
+                        status=r["status"],
+                        withdrawn_at=r["withdrawn_at"],
+                        consent_metadata=r["consent_metadata"],
+                        created_at=r["created_at"],
+                        updated_at=r["updated_at"]
+                    )
+                    for r in records
+                ]
+
+            elif self._connection_pool:
+                # Real database
+                async with self._connection_pool.acquire() as conn:
+                    if consent_type:
+                        rows = await conn.fetch(
+                            """
+                            SELECT *
+                            FROM consent_records
+                            WHERE user_id = $1
+                            AND consent_type = $2
+                            ORDER BY granted_at DESC
+                            """,
+                            user_id,
+                            consent_type
+                        )
+                    else:
+                        rows = await conn.fetch(
+                            """
+                            SELECT *
+                            FROM consent_records
+                            WHERE user_id = $1
+                            ORDER BY granted_at DESC
+                            """,
+                            user_id
+                        )
+                    return rows
+
+        except Exception as e:
+            logger.error(f"Failed to get consent history for {user_id}: {str(e)}")
+            return []
+
+    async def check_consent_exists(self, user_id: str, consent_type: str) -> bool:
+        """
+        Check if any consent record exists for a user and type.
+
+        Args:
+            user_id: User identifier
+            consent_type: Type of consent
+
+        Returns:
+            True if consent exists, False otherwise
+        """
+        await self.initialize()
+
+        try:
+            if hasattr(self, '_mock_data'):
+                # Mock database
+                return any(
+                    record for record in self._mock_data["consent_records"]
+                    if record["user_id"] == user_id and
+                       record["consent_type"] == consent_type
+                )
+
+            elif self._connection_pool:
+                # Real database
+                async with self._connection_pool.acquire() as conn:
+                    exists = await conn.fetchval(
+                        """
+                        SELECT EXISTS(
+                            SELECT 1 FROM consent_records
+                            WHERE user_id = $1
+                            AND consent_type = $2
+                        )
+                        """,
+                        user_id,
+                        consent_type
+                    )
+                    return bool(exists)
+
+        except Exception as e:
+            logger.error(f"Failed to check consent exists for {user_id}: {str(e)}")
+            return False
 
     @asynccontextmanager
     async def transaction(self):
