@@ -2,7 +2,7 @@
 Middleware for Data Foundry application
 """
 
-from fastapi import HTTPException, Request, status
+from fastapi import HTTPException, Request, Response, status
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from src.core.config import settings
@@ -223,5 +223,3 @@ class CORSMiddleware(BaseHTTPMiddleware):
         return origin in allowed_origins
 
 
-# Response type for OPTIONS
-from fastapi import Response

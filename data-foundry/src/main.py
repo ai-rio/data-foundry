@@ -6,14 +6,13 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, status
-from fastapi.middleware.cors import CORSMiddleware
 
 from src.app.middleware import (
+    CORSMiddleware as CustomCORSMiddleware,
     RequestLoggingMiddleware,
     SecurityHeadersMiddleware,
     TenantContextMiddleware,
 )
-# from src.api.v1.consent import router as consent_router
 from src.core.config import settings
 from src.core.security import get_current_user_token
 from src.tasks.ingestion import data_ingestion_flow
@@ -45,22 +44,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # Add custom middleware
+app.add_middleware(CustomCORSMiddleware)
 app.add_middleware(TenantContextMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
 
-# Include API routers
-# app.include_router(consent_router, prefix=settings.API_V1_STR)
 
 
 # Test token endpoint for Phase 6.5 load testing - DEVELOPMENT ONLY
@@ -293,29 +283,38 @@ async def get_system_info():
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc):
     """Handle HTTP exceptions."""
-    return {
-        "error": {
-            "type": "http_error",
-            "status_code": exc.status_code,
-            "detail": exc.detail,
+    from fastapi.responses import JSONResponse
+
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": {
+                "type": "http_error",
+                "status_code": exc.status_code,
+                "detail": exc.detail,
+            }
         }
-    }
+    )
 
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request, exc):
     """Handle general exceptions."""
     import logging
+    from fastapi.responses import JSONResponse
 
     logger = logging.getLogger("data_foundry")
     logger.error(f"Unhandled exception: {str(exc)}", exc_info=True)
 
-    return {
-        "error": {
-            "type": "internal_server_error",
-            "detail": "An internal error occurred",
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": {
+                "type": "internal_server_error",
+                "detail": "An internal error occurred",
+            }
         }
-    }
+    )
 
 
 if __name__ == "__main__":
