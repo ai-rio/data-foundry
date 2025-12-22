@@ -11,11 +11,14 @@ GDPR References:
 """
 
 import hashlib
+import logging
 import os
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 
 from src.models.enums import ConsentStatus
+
+logger = logging.getLogger(__name__)
 
 
 def hash_ip_address(ip_address: str, salt: str = None) -> str:
@@ -214,13 +217,25 @@ class ConsentManager:
         # Store in database
         consent_id = await self.db_manager.create_consent_record(record)
 
-        # Log to audit trail
+        # Log to audit trail with complete metadata
         if self.audit_service:
-            await self.audit_service.log_consent_granted(
-                user_id=user_id,
-                consent_type=consent_type,
-                timestamp=record.granted_at
-            )
+            try:
+                await self.audit_service.log_consent_granted(
+                    user_id=user_id,
+                    consent_type=consent_type,
+                    timestamp=record.granted_at,
+                    metadata={
+                        "ip_address": hash_ip_address(metadata.get("ip", "unknown")),  # Hash IP for privacy
+                        "user_agent": metadata.get("user_agent", "unknown"),
+                        "consent_text": consent_text[:100] + "..." if len(consent_text) > 100 else consent_text,
+                        "consent_purpose": metadata.get("purpose", "not_specified"),
+                        "data_retention_period": metadata.get("retention", "not_specified"),
+                        "consent_id": consent_id
+                    }
+                )
+            except Exception as e:
+                # Log error but don't fail the consent creation
+                logger.warning(f"Failed to log consent granted: {e}")
 
         return record
 
@@ -229,7 +244,28 @@ class ConsentManager:
         Verify if user has active consent for given type.
         """
         consent = await self.db_manager.get_active_consent(user_id, consent_type)
-        return consent is not None and consent.status == ConsentStatus.ACTIVE
+        result = consent is not None and consent.status == ConsentStatus.ACTIVE
+
+        # Log verification to audit trail
+        if self.audit_service:
+            try:
+                await self.audit_service.log_consent_verified(
+                    user_id=user_id,
+                    consent_type=consent_type,
+                    timestamp=datetime.now(timezone.utc),
+                    verification_result=result,
+                    metadata={
+                        "verification_purpose": "operation_check",
+                        "system_component": "consent_manager",
+                        "consent_found": consent is not None,
+                        "consent_id": consent.id if consent else None
+                    }
+                )
+            except Exception as e:
+                # Log error but don't fail the verification
+                logger.warning(f"Failed to log consent verification: {e}")
+
+        return result
 
     async def withdraw_consent(self, user_id: str, consent_type: str) -> bool:
         """
@@ -251,11 +287,20 @@ class ConsentManager:
 
         # Log to audit trail
         if self.audit_service:
-            await self.audit_service.log_consent_withdrawn(
-                user_id=user_id,
-                consent_type=consent_type,
-                timestamp=consent.withdrawn_at
-            )
+            try:
+                await self.audit_service.log_consent_withdrawn(
+                    user_id=user_id,
+                    consent_type=consent_type,
+                    timestamp=consent.withdrawn_at,
+                    metadata={
+                        "withdrawal_method": "user_initiated",
+                        "consent_id": consent.id,
+                        "original_granted_at": consent.granted_at.isoformat() if consent.granted_at else None
+                    }
+                )
+            except Exception as e:
+                # Log error but don't fail the withdrawal
+                logger.warning(f"Failed to log consent withdrawn: {e}")
 
         return True
 
@@ -312,11 +357,22 @@ class ConsentManager:
 
         # Log to audit trail
         if self.audit_service:
-            await self.audit_service.log_consent_withdrawn(
-                user_id=user_id,
-                consent_type=f"objection_{consent_type}",
-                timestamp=objection_record.granted_at
-            )
+            try:
+                await self.audit_service.log_consent_objection(
+                    user_id=user_id,
+                    consent_type=consent_type,
+                    timestamp=objection_record.granted_at,
+                    objection_reason=reason,
+                    objection_category=category,
+                    metadata={
+                        "legal_basis": "GDPR_Article_21",
+                        "objection_id": objection_id,
+                        "processing_type": consent_type
+                    }
+                )
+            except Exception as e:
+                # Log error but don't fail the objection
+                logger.warning(f"Failed to log consent objection: {e}")
 
         return True
 
