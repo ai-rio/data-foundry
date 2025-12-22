@@ -21,19 +21,32 @@ from src.models.enums import ConsentStatus
 logger = logging.getLogger(__name__)
 
 
-def hash_ip_address(ip_address: str, salt: str = None) -> str:
+def hash_ip_address(ip_address: str, salt: str) -> str:
     """
     Hash IP address for privacy protection (GDPR compliance).
 
     Args:
         ip_address: Raw IP address
-        salt: Optional salt for hashing (uses environment variable if not provided)
+        salt: Salt for hashing (must be provided)
 
     Returns:
         Hashed IP address
+
+    Raises:
+        ValueError: If salt is invalid or not provided
     """
-    if salt is None:
-        salt = os.getenv("IP_HASH_SALT", "default-salt-change-in-production")
+    # Validate salt requirements for security
+    if not salt:
+        raise ValueError(
+            "Salt parameter is required and cannot be empty for IP hashing. "
+            "This is required to protect user privacy."
+        )
+
+    if len(salt) < 32:
+        raise ValueError(
+            f"Salt must be at least 32 characters long for security. "
+            f"Current length: {len(salt)}"
+        )
 
     return hashlib.sha256(f"{ip_address}{salt}".encode()).hexdigest()
 
@@ -72,7 +85,17 @@ class ConsentRecord:
         self.consent_text = consent_text.strip()
         self.granted_at = granted_at
         # Hash IP address for privacy (GDPR compliance)
-        self.ip_address = hash_ip_address(ip_address.strip() if ip_address else "unknown")
+        # Use environment variable salt for consistency
+        ip_hash_salt = os.getenv("IP_HASH_SALT")
+        if not ip_hash_salt:
+            raise ValueError(
+                "IP_HASH_SALT environment variable must be set for GDPR compliance. "
+                "This is required to protect user privacy."
+            )
+        self.ip_address = hash_ip_address(
+            ip_address.strip() if ip_address else "unknown",
+            ip_hash_salt
+        )
         self.user_agent = user_agent.strip() if user_agent else "unknown"
         self.status = status
         self.withdrawn_at = withdrawn_at

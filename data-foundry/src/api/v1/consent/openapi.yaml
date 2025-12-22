@@ -1,0 +1,831 @@
+openapi: 3.0.3
+info:
+  title: Data Foundry Consent Management API
+  description: |
+    GDPR-compliant consent management endpoints for Data Foundry.
+
+    This API provides endpoints for managing user consent in compliance with:
+    - GDPR Article 7: Conditions for consent
+    - GDPR Article 21: Right to object to processing
+    - Full audit trail and record-keeping requirements
+
+    All consent records include:
+    - IP address hashing for privacy
+    - Complete audit logging
+    - Tamper-evident records
+    - Expiration tracking
+  version: 1.0.0
+  contact:
+    name: Data Foundry Support
+    email: support@datafoundry.com
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: https://api.datafoundry.com/v1
+    description: Production server
+  - url: https://staging-api.datafoundry.com/v1
+    description: Staging server
+  - url: http://localhost:8000/api/v1
+    description: Development server
+
+tags:
+  - name: consent
+    description: Consent management operations
+    externalDocs:
+      description: GDPR Reference
+      url: https://gdpr.eu/article-7-conditions-for-consent/
+
+paths:
+  /consent/grant:
+    post:
+      tags:
+        - consent
+      summary: Grant new consent
+      description: |
+        Record a new consent according to GDPR Article 7 requirements.
+
+        **GDPR Compliance Requirements:**
+        - Consent must be freely given, specific, informed, and unambiguous
+        - Consent text must be detailed (minimum 50 characters)
+        - IP address and user agent are recorded for audit purposes
+        - All consents are logged to the audit trail
+
+        **Required Elements in Consent Text:**
+        - Purpose of data processing
+        - Types of data being processed
+        - Processing activities
+        - Data retention period
+      operationId: grantConsent
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GrantConsentRequest'
+            examples:
+              dataProcessing:
+                summary: Data processing consent
+                value:
+                  user_id: "user_12345"
+                  consent_type: "data_processing"
+                  consent_text: "I consent to the processing of my personal data for the purpose of improving services. This includes analysis of usage patterns, personalization of content, and storage of data for a period of 2 years. I understand that I can withdraw this consent at any time."
+                  metadata:
+                    ip: "192.168.1.100"
+                    user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                    purpose: "service_improvement"
+                    retention_period: "2_years"
+                    source: "webform"
+                    version: "1.2"
+                    locale: "en-US"
+      responses:
+        '201':
+          description: Consent granted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+              example:
+                success: true
+                message: "Consent granted successfully"
+                data:
+                  consent_id: 12345
+                  user_id: "user_12345"
+                  consent_type: "data_processing"
+                  granted_at: "2023-12-22T10:30:00Z"
+                  status: "active"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /consent/withdraw:
+    post:
+      tags:
+        - consent
+      summary: Withdraw consent
+      description: |
+        Withdraw previously granted consent under GDPR Article 7(3).
+
+        **GDPR Requirements:**
+        - Withdrawal is as easy as giving consent
+        - Previous processing remains lawful
+        - Withdrawal takes effect immediately
+        - All withdrawals are logged to the audit trail
+      operationId: withdrawConsent
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WithdrawConsentRequest'
+            example:
+              user_id: "user_12345"
+              consent_type: "data_processing"
+              reason: "No longer wish to participate"
+              metadata:
+                ip: "192.168.1.100"
+                user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      responses:
+        '200':
+          description: Consent withdrawn successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+              example:
+                success: true
+                message: "Consent withdrawn successfully"
+                data:
+                  user_id: "user_12345"
+                  consent_type: "data_processing"
+                  withdrawn_at: "2023-12-22T14:30:00Z"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No active consent found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "not_found"
+                message: "No active consent found for user user_12345 of type data_processing"
+                timestamp: "2023-12-22T14:30:00Z"
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /consent/verify/{user_id}/{consent_type}:
+    get:
+      tags:
+        - consent
+      summary: Verify consent status
+      description: |
+        Check if a user has active consent for a specific type of processing.
+
+        **Use Cases:**
+        - Before data processing operations
+        - For consent-gated features
+        - To validate user permissions
+      operationId: verifyConsent
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+            example: "user_12345"
+        - name: consent_type
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/ConsentType'
+          example: "data_processing"
+      responses:
+        '200':
+          description: Consent verification result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsentVerificationResponse'
+              examples:
+                hasConsent:
+                  summary: User has active consent
+                  value:
+                    user_id: "user_12345"
+                    consent_type: "data_processing"
+                    has_consent: true
+                    granted_at: "2023-12-22T10:30:00Z"
+                    status: "active"
+                    last_updated: "2023-12-22T10:30:00Z"
+                noConsent:
+                  summary: User has no active consent
+                  value:
+                    user_id: "user_12345"
+                    consent_type: "data_processing"
+                    has_consent: false
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /consent/object:
+    post:
+      tags:
+        - consent
+      summary: Object to processing
+      description: |
+        Object to processing of personal data under GDPR Article 21.
+
+        **GDPR Requirements:**
+        - Users can object even without prior consent
+        - Creates a legally binding objection record
+        - Processing must stop upon objection
+        - All objections are logged to the audit trail
+      operationId: objectToProcessing
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ObjectToProcessingRequest'
+            example:
+              user_id: "user_12345"
+              consent_type: "marketing"
+              reason: "I do not want my data used for marketing purposes. Please remove me from all marketing lists and delete any marketing-related data."
+              category: "direct_marketing"
+              metadata:
+                ip: "192.168.1.100"
+                user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      responses:
+        '201':
+          description: Objection recorded successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectionResponse'
+              example:
+                user_id: "user_12345"
+                consent_type: "marketing"
+                objection_id: 98765
+                category: "direct_marketing"
+                created_at: "2023-12-22T16:45:00Z"
+                status: "active"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /consent/user/{user_id}:
+    get:
+      tags:
+        - consent
+      summary: Get user's current consents
+      description: |
+        Get all current consents for a user.
+
+        **Use Cases:**
+        - User preference centers
+        - Consent management dashboards
+        - Compliance reporting
+      operationId: getUserConsents
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+            example: "user_12345"
+        - name: consent_type
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/ConsentType'
+          description: Filter by consent type
+        - name: status_filter
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/ConsentStatus'
+          default: "active"
+          description: Filter by consent status
+      responses:
+        '200':
+          description: User consents retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ConsentRecordResponse'
+              example:
+                - id: 12345
+                  user_id: "user_12345"
+                  consent_type: "data_processing"
+                  consent_text: "I consent to the processing of my personal data..."
+                  granted_at: "2023-12-22T10:30:00Z"
+                  status: "active"
+                  withdrawn_at: null
+                  metadata:
+                    source: "webform"
+                    version: "1.2"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /consent/user/{user_id}/history:
+    get:
+      tags:
+        - consent
+      summary: Get consent history
+      description: |
+        Retrieve the complete consent history for a user.
+
+        **Use Cases:**
+        - GDPR data subject access requests
+        - Internal audits and compliance checks
+        - Consent management and reporting
+      operationId: getConsentHistory
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+            example: "user_12345"
+        - name: consent_type
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/ConsentType'
+          description: Filter by consent type
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+          description: Page number for pagination
+        - name: per_page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          description: Records per page (max 100)
+      responses:
+        '200':
+          description: Consent history retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsentHistoryResponse'
+              example:
+                user_id: "user_12345"
+                consent_type: null
+                records:
+                  - id: 12345
+                    user_id: "user_12345"
+                    consent_type: "data_processing"
+                    consent_text: "I consent to the processing..."
+                    granted_at: "2023-12-22T10:30:00Z"
+                    status: "active"
+                    withdrawn_at: null
+                    metadata: {}
+                  - id: 12344
+                    user_id: "user_12345"
+                    consent_type: "marketing"
+                    consent_text: "I consent to receiving marketing..."
+                    granted_at: "2023-11-15T14:20:00Z"
+                    status: "withdrawn"
+                    withdrawn_at: "2023-12-01T09:15:00Z"
+                    metadata: {}
+                total: 25
+                page: 1
+                per_page: 20
+                has_more: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    ConsentType:
+      type: string
+      enum:
+        - data_processing
+        - marketing
+        - analytics
+        - personalization
+        - third_party_sharing
+        - cookies
+        - email_communication
+        - research
+      description: Standard consent types for GDPR compliance
+
+    ConsentStatus:
+      type: string
+      enum:
+        - active
+        - withdrawn
+        - expired
+        - revoked
+      description: Consent status enumeration
+
+    ObjectionCategory:
+      type: string
+      enum:
+        - direct_marketing
+        - profiling
+        - analytics
+        - research
+        - third_party
+        - general
+      description: Categories for GDPR Article 21 objections
+
+    MetadataModel:
+      type: object
+      required:
+        - ip
+        - user_agent
+      properties:
+        ip:
+          type: string
+          description: IP address of the user (required for audit)
+          example: "192.168.1.100"
+        user_agent:
+          type: string
+          description: Browser/client identifier
+          example: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        purpose:
+          type: string
+          description: Specific purpose of consent
+          example: "service_improvement"
+        retention_period:
+          type: string
+          description: Data retention period
+          example: "2_years"
+        source:
+          type: string
+          description: Source of consent
+          example: "webform"
+        version:
+          type: string
+          description: Consent form version
+          example: "1.2"
+        locale:
+          type: string
+          description: Language/locale of consent
+          example: "en-US"
+        custom_fields:
+          type: object
+          additionalProperties: true
+          description: Additional custom metadata
+
+    GrantConsentRequest:
+      type: object
+      required:
+        - user_id
+        - consent_type
+        - consent_text
+        - metadata
+      properties:
+        user_id:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: User identifier
+          example: "user_12345"
+        consent_type:
+          $ref: '#/components/schemas/ConsentType'
+        consent_text:
+          type: string
+          minLength: 50
+          maxLength: 10000
+          description: Full consent text shown to user (minimum 50 characters for GDPR compliance)
+          example: "I consent to the processing of my personal data for the purpose of improving services..."
+        metadata:
+          $ref: '#/components/schemas/MetadataModel'
+
+    WithdrawConsentRequest:
+      type: object
+      required:
+        - user_id
+        - consent_type
+        - metadata
+      properties:
+        user_id:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: User identifier
+          example: "user_12345"
+        consent_type:
+          $ref: '#/components/schemas/ConsentType'
+        reason:
+          type: string
+          maxLength: 1000
+          description: Optional reason for withdrawal
+          example: "No longer wish to participate"
+        metadata:
+          $ref: '#/components/schemas/MetadataModel'
+
+    ObjectToProcessingRequest:
+      type: object
+      required:
+        - user_id
+        - consent_type
+        - reason
+        - metadata
+      properties:
+        user_id:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: User identifier
+          example: "user_12345"
+        consent_type:
+          $ref: '#/components/schemas/ConsentType'
+        reason:
+          type: string
+          minLength: 10
+          maxLength: 1000
+          description: Reason for objection (minimum 10 characters)
+          example: "I do not want my data used for marketing purposes"
+        category:
+          $ref: '#/components/schemas/ObjectionCategory'
+          default: "general"
+        metadata:
+          $ref: '#/components/schemas/MetadataModel'
+
+    ConsentRecordResponse:
+      type: object
+      required:
+        - id
+        - user_id
+        - consent_type
+        - consent_text
+        - granted_at
+        - status
+      properties:
+        id:
+          type: integer
+          description: Consent record ID
+          example: 12345
+        user_id:
+          type: string
+          description: User identifier
+          example: "user_12345"
+        consent_type:
+          type: string
+          description: Type of consent
+          example: "data_processing"
+        consent_text:
+          type: string
+          description: Full consent text
+          example: "I consent to the processing of my personal data..."
+        granted_at:
+          type: string
+          format: date-time
+          description: When consent was granted
+          example: "2023-12-22T10:30:00Z"
+        status:
+          $ref: '#/components/schemas/ConsentStatus'
+        withdrawn_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When consent was withdrawn
+        metadata:
+          type: object
+          description: Consent metadata
+          example:
+            source: "webform"
+            version: "1.2"
+
+    ConsentHistoryResponse:
+      type: object
+      required:
+        - user_id
+        - records
+        - total
+        - page
+        - per_page
+        - has_more
+      properties:
+        user_id:
+          type: string
+          description: User identifier
+          example: "user_12345"
+        consent_type:
+          type: string
+          nullable: true
+          description: Filter by consent type
+        records:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConsentRecordResponse'
+        total:
+          type: integer
+          description: Total number of records
+          example: 25
+        page:
+          type: integer
+          description: Current page number
+          example: 1
+        per_page:
+          type: integer
+          description: Records per page
+          example: 20
+        has_more:
+          type: boolean
+          description: Whether more records are available
+          example: true
+
+    ConsentVerificationResponse:
+      type: object
+      required:
+        - user_id
+        - consent_type
+        - has_consent
+      properties:
+        user_id:
+          type: string
+          description: User identifier
+          example: "user_12345"
+        consent_type:
+          type: string
+          description: Type of consent checked
+          example: "data_processing"
+        has_consent:
+          type: boolean
+          description: Whether user has active consent
+          example: true
+        granted_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When consent was granted
+        status:
+          $ref: '#/components/schemas/ConsentStatus'
+        last_updated:
+          type: string
+          format: date-time
+          nullable: true
+          description: When consent was last updated
+
+    ObjectionResponse:
+      type: object
+      required:
+        - user_id
+        - consent_type
+        - objection_id
+        - category
+        - created_at
+        - status
+      properties:
+        user_id:
+          type: string
+          description: User identifier
+          example: "user_12345"
+        consent_type:
+          type: string
+          description: Type of processing objected to
+          example: "marketing"
+        objection_id:
+          type: integer
+          description: Objection record ID
+          example: 98765
+        category:
+          type: string
+          description: Objection category
+          example: "direct_marketing"
+        created_at:
+          type: string
+          format: date-time
+          description: When objection was recorded
+          example: "2023-12-22T16:45:00Z"
+        status:
+          type: string
+          default: "active"
+          description: Objection status
+          example: "active"
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+        - message
+        - timestamp
+      properties:
+        error:
+          type: string
+          description: Error type
+          example: "validation_error"
+        message:
+          type: string
+          description: Error message
+          example: "Consent text must be specific - avoid generic 'I agree' statements"
+        details:
+          type: object
+          description: Additional error details
+        timestamp:
+          type: string
+          format: date-time
+          description: Error timestamp
+
+    SuccessResponse:
+      type: object
+      required:
+        - success
+        - message
+        - timestamp
+      properties:
+        success:
+          type: boolean
+          default: true
+          description: Operation success status
+        message:
+          type: string
+          description: Success message
+          example: "Consent granted successfully"
+        data:
+          type: object
+          description: Response data
+        timestamp:
+          type: string
+          format: date-time
+          description: Response timestamp
+
+  responses:
+    BadRequest:
+      description: Bad request - validation error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: "validation_error"
+            message: "Consent text must be specific - avoid generic 'I agree' statements"
+            timestamp: "2023-12-22T10:30:00Z"
+
+    Unauthorized:
+      description: Unauthorized - authentication required
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: "unauthorized"
+            message: "Authentication required"
+            timestamp: "2023-12-22T10:30:00Z"
+
+    RateLimited:
+      description: Too many requests - rate limit exceeded
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: "rate_limit_exceeded"
+            message: "Rate limit exceeded. Please try again later."
+            timestamp: "2023-12-22T10:30:00Z"
+
+    InternalServerError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: "internal_server_error"
+            message: "An internal error occurred"
+            timestamp: "2023-12-22T10:30:00Z"

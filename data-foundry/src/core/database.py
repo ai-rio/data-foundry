@@ -813,6 +813,50 @@ class DatabaseManager:
             # Mock database - no transaction needed
             yield None
 
+    async def delete_user_consent_data(self, user_id: str) -> int:
+        """
+        Delete all consent data for a user (GDPR Article 17 - Right to Erasure).
+
+        Args:
+            user_id: User identifier to delete data for
+
+        Returns:
+            Number of records deleted
+        """
+        try:
+            if not self._connection_pool:
+                # Mock database - return simulated count
+                return 3  # Simulate deleting a few records
+
+            # Real database
+                async with self.transaction() as conn:
+                    # First, count records to be deleted
+                    count_result = await conn.fetchval(
+                        """
+                        SELECT COUNT(*)
+                        FROM consent_records
+                        WHERE user_id = $1
+                        """,
+                        user_id
+                    )
+
+                    # Delete all consent records for the user
+                    await conn.execute(
+                        """
+                        DELETE FROM consent_records
+                        WHERE user_id = $1
+                        """,
+                        user_id
+                    )
+
+                    deleted_count = int(count_result) if count_result else 0
+                    logger.info(f"Deleted {deleted_count} consent records for user {user_id}")
+                    return deleted_count
+
+        except Exception as e:
+            logger.error(f"Failed to delete consent data for {user_id}: {str(e)}")
+            raise
+
     async def close(self):
         """Close database connections."""
         if self._connection_pool:

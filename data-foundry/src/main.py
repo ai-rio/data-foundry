@@ -13,6 +13,7 @@ from src.app.middleware import (
     SecurityHeadersMiddleware,
     TenantContextMiddleware,
 )
+from src.api.v1.consent import router as consent_router
 from src.core.config import settings
 from src.core.security import get_current_user_token
 from src.tasks.ingestion import data_ingestion_flow
@@ -58,15 +59,18 @@ app.add_middleware(TenantContextMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
 
+# Include API routers
+app.include_router(consent_router, prefix=settings.API_V1_STR)
 
-# Test token endpoint for Phase 6.5 load testing
+
+# Test token endpoint for Phase 6.5 load testing - DEVELOPMENT ONLY
 @app.get("/test-token")
 async def get_test_token():
     """
     Generate a test JWT token for Phase 6.5 load testing.
 
-    This endpoint is only available in development mode and provides
-    a simple token to authenticate load testing requests.
+    SECURITY NOTE: This endpoint is only available in DEBUG mode and should
+    be disabled in production. Rate limited to prevent abuse.
     """
     if not settings.DEBUG:
         raise HTTPException(
