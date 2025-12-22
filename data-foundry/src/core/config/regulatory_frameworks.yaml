@@ -1,0 +1,433 @@
+# Regulatory Frameworks Configuration for Data Foundry
+# Comprehensive configuration for multi-jurisdiction breach notification compliance
+
+version: "1.0"
+description: "Regulatory frameworks configuration for advanced breach notification workflows"
+
+# GDPR (General Data Protection Regulation) Configuration
+gdpr:
+  name: "General Data Protection Regulation"
+  jurisdiction: "European Union"
+  effective_date: "2018-05-25"
+  official_reference: "Regulation (EU) 2016/679"
+
+  # Notification Requirements
+  notification:
+    deadline_hours: 72
+    supervisory_authority_required: true
+    data_subject_notification_required: true
+    documentation_required: true
+
+  # Risk Assessment Factors
+  risk_factors:
+    special_categories:
+      - "health_data"
+      - "biometric_data"
+      - "genetic_data"
+      - "political_opinions"
+      - "religious_beliefs"
+      - "sexual_orientation"
+      - "racial_ethnic_origin"
+      - "trade_union_membership"
+
+    aggravating_factors:
+      - large_scale_processing: ">5000_data_subjects"
+      - systematic_monitoring: "public_spaces_or_large_scale"
+      - special_categories: "any_special_category_data"
+      - cross_border_transfer: "outside_eea_without_protections"
+      - no_encryption: "data_not_encrypted"
+      - vulnerable_subjects: "children_or_other_vulnerable_groups"
+
+    mitigating_factors:
+      - pseudonymization: "data_pseudonymized"
+      - encryption: "state_of_the_art_encryption"
+      - prompt_detection: "detected_within_72_hours"
+      - limited_scope: "limited_data_affected"
+      - access_controls: "robust_access_controls"
+
+  # Member State Specific Requirements
+  member_states:
+    france:
+      authority: "CNIL"
+      authority_name: "Commission Nationale de l'Informatique et des Libertés"
+      notification_channels: ["email", "secure_portal"]
+      language_requirements: ["fr"]
+      local_requirements:
+        - "dpd_mandatory_designation"
+        - "local_law_compliance"
+
+    germany:
+      authority: "BfDI"
+      authority_name: "Bundesbeauftragte für den Datenschutz und die Informationsfreiheit"
+      notification_channels: ["email", "secure_portal", "fax"]
+      language_requirements: ["de"]
+      local_requirements:
+        - "state_authorities_notification"
+        - "works_council_involvement"
+
+    spain:
+      authority: "AEPD"
+      authority_name: "Agencia Española de Protección de Datos"
+      notification_channels: ["email", "electronic_system"]
+      language_requirements: ["es"]
+      local_requirements:
+        - "regional_authorities_notification"
+        - "judicial_authority_notification"
+
+  # Content Requirements
+  required_content:
+    supervisory_authority:
+      - "incident_description"
+      - "data_categories_affected"
+      - "approximate_data_subjects_count"
+      - "likely_consequences"
+      - "measures_taken_or_proposed"
+      - "dpo_contact_details"
+
+    data_subject:
+      - "clear_description_incident"
+      - "categories_personal_data"
+      - "measures_taken"
+      - "recommendations_for_protection"
+      - "contact_information"
+
+# CCPA/CPRA (California Consumer Privacy Act/Privacy Rights Act) Configuration
+ccpa:
+  name: "California Consumer Privacy Act"
+  jurisdiction: "California, USA"
+  effective_date: "2020-01-01"
+  official_reference: "Cal. Civ. Code § 1798.82"
+
+  # Notification Requirements
+  notification:
+    deadline_hours: 72  # "Reasonable time" standard, typically 72 hours
+    attorney_general_required: true
+    consumer_notification_required: true
+
+  # Risk Assessment Factors
+  risk_factors:
+    sensitive_data_types:
+      - "ssn"
+      - "driver_license"
+      - "passport_number"
+      - "financial_account"
+      - "health_insurance"
+      - "medical_information"
+
+    notification_triggers:
+      - california_residents_affected: ">=500_residents"
+      - sensitive_data_compromised: "any_sensitive_data"
+      - identity_theft_risk: "high_risk_assessment"
+      - remediation_costs: "significant_costs_expected"
+
+    aggravating_factors:
+      - large_scale_breach: ">100000_california_residents"
+      - multiple_data_types: "3+_data_categories"
+      - intentional_concealment: "delayed_notification"
+      - no_encryption: "data_not_encrypted"
+
+    mitigating_factors:
+      - encryption: "data_encrypted_at_breach"
+      - prompt_notification: "<30_days_after_discovery"
+      - limited_california_residents: "<100_residents"
+      - remediation_offered: "free_identity_protection"
+
+  # Content Requirements
+  required_content:
+    consumer:
+      - "what_happened"
+      - "what_information_was_involved"
+      - "what_we_are_doing"
+      - "what_you_can_do"
+
+    attorney_general:
+      - "nature_breach"
+      - "california_residents_affected"
+      - "measures_taken"
+      - "notification_timeline"
+
+# PIPEDA (Personal Information Protection and Electronic Documents Act) Configuration
+pipeda:
+  name: "Personal Information Protection and Electronic Documents Act"
+  jurisdiction: "Canada"
+  effective_date: "2000-04-13"
+  official_reference: "S.C. 2000, c. 5"
+
+  # Notification Requirements
+  notification:
+    deadline_hours: null  # "As soon as feasible"
+    privacy_commissioner_required: true
+    individual_notification_required: true
+    harm_assessment_required: true
+
+  # Risk Assessment Factors
+  risk_factors:
+    harm_types:
+      - "identity_theft"
+      - "financial_loss"
+      - "reputational_damage"
+      - "humiliation"
+      - "loss_business_employment"
+
+    notification_triggers:
+      - significant_harm: "real_risk_of_significant_harm"
+      - sensitive_data: "financial_health_medical_info"
+      - no_protection: "safeguards_inadequate"
+      - unauthorized_access: "breach_detected"
+
+    aggravating_factors:
+      - large_scale: ">10000_canadians_affected"
+      - targeted_breach: "malicious_intent"
+      - multiple_provinces: "cross_provincial_impact"
+      - no_encryption: "data_unencrypted"
+
+    mitigating_factors:
+      - encryption: "data_encrypted"
+      - prompt_disclosure: "immediate_disclosure"
+      - limited_canadians: "<1000_canadians_affected"
+      - remediation_measures: "effective_remediation"
+
+  # Content Requirements
+  required_content:
+    individual:
+      - "circumstances_breach"
+      - "compromised_information"
+      - "steps_taken_reduce_harm"
+      - "steps_individuals_can_take"
+
+# LGPD (Lei Geral de Proteção de Dados) Configuration
+lgpd:
+  name: "Lei Geral de Proteção de Dados"
+  jurisdiction: "Brazil"
+  effective_date: "2020-09-18"
+  official_reference: "Law No. 13.709/2018"
+
+  # Notification Requirements
+  notification:
+    deadline_hours: 72
+    anpd_notification_required: true  # National Data Protection Authority
+    data_subject_notification_required: true
+
+  # Risk Assessment Factors
+  risk_factors:
+    relevant_data:
+      - "name"
+      - "cpf"  # Brazilian taxpayer ID
+      - "email"
+      - "phone"
+      - "address"
+      - "location_data"
+
+    special_categories:
+      - "health_data"
+      - "biometric_data"
+      - "religious_beliefs"
+      - "political_opinions"
+
+    notification_triggers:
+      - risk_rights_freedoms: "damage_to_rights_freedoms"
+      - large_scale: "relevant_scale_breach"
+      - special_categories: "special_category_data"
+      - discrimination_risk: "potential_discrimination"
+
+    aggravating_factors:
+      - massive_scale: ">100000_brazilian_residents"
+      - no_governance: "no_dpo_program"
+      - cross_border: "international_transfer"
+      - no_security: "lacking_security_measures"
+
+    mitigating_factors:
+      - encryption: "data_encrypted"
+      - pseudonymization: "data_pseudonymized"
+      - security_program: "comprehensive_security"
+      - prompt_notification: "<72_hours"
+
+  # Content Requirements
+  required_content:
+    anpd:
+      - "incident_description"
+      - "affected_data_categories"
+      - "affected_individuals_count"
+      - "measures_taken"
+      - "communication_plan"
+
+    data_subject:
+      - "incident_details"
+      - "data_categories_affected"
+      - "measures_protection"
+      - "rights_explanation"
+
+# PDPA (Personal Data Protection Act) Configuration
+pdpa:
+  name: "Personal Data Protection Act"
+  jurisdiction: "Singapore"
+  effective_date: "2014-07-02"
+  official_reference: "PDPA Act 26 of 2012"
+
+  # Notification Requirements
+  notification:
+    deadline_hours: null  # "As soon as practicable"
+    pdpc_notification_required: true  # Personal Data Protection Commission
+    individual_notification_required: true
+
+  # Risk Assessment Factors
+  risk_factors:
+    sensitive_data:
+      - "nric"  # National Registration Identity Card
+      - "passport"
+      - "work_pass"
+      - "financial_data"
+      - "health_data"
+
+    harm_indicators:
+      - identity_theft: "identity_theft_possible"
+      - financial_loss: "financial_damage_likely"
+      - fraud: "fraud_risk_high"
+      - humiliation: "public_embarrassment"
+
+    notification_triggers:
+      - significant_harm: "significant_harm_likelihood"
+      - large_scale: "500+_individuals_affected"
+      - sensitive_data: "nric_financial_health_data"
+      - malicious_access: "unauthorized_access"
+
+    aggravating_factors:
+      - no_protection: "no_reasonable_security"
+      - delayed_discovery: "extended_breach_duration"
+      - targeted_attack: "malicious_intent"
+      - multiple_data: "multiple_data_categories"
+
+    mitigating_factors:
+      - encryption: "data_encrypted"
+      - prompt_action: "immediate_containment"
+      - limited_scope: "limited_individuals_affected"
+      - remediation: "effective_remediation"
+
+  # Content Requirements
+  required_content:
+    pdpc:
+      - "nature_breach"
+      - "information_compromised"
+      - "affected_individuals_count"
+      - "impact_assessment"
+      - "remediation_steps"
+
+    individual:
+      - "incident_description"
+      - "data_compromised"
+      - "impact_assessment"
+      - "protective_measures"
+
+# Global Configuration
+global:
+  # Common requirements across jurisdictions
+  common_requirements:
+    documentation:
+      - "incident_timeline"
+      - "impact_assessment"
+      - "communication_logs"
+      - "remediation_actions"
+      - "lessons_learned"
+
+    evidence_preservation:
+      - "system_logs"
+      - "network_logs"
+      - "access_logs"
+      - "security_reports"
+      - "forensic_reports"
+
+    communication_standards:
+      - "clear_concise_language"
+      - "no_technical_jargon"
+      - "accessible_format"
+      - "multilingual_support"
+      - "cultural_sensitivity"
+
+  # Escalation Procedures
+  escalation_procedures:
+    level_1:
+      trigger: "24_hours_without_approval"
+      approvers: ["manager", "security_lead"]
+      notification_channels: ["email", "sms"]
+
+    level_2:
+      trigger: "48_hours_without_approval"
+      approvers: ["director", "legal_counsel"]
+      notification_channels: ["email", "slack", "escalation_list"]
+
+    level_3:
+      trigger: "72_hours_without_approval"
+      approvers: ["executive", "board_member"]
+      notification_channels: ["all_channels", "emergency_alert"]
+
+  # Template Standards
+  template_standards:
+    accessibility:
+      wcag_level: "AA"
+      font_size_minimum: "16px"
+      contrast_ratio_minimum: "4.5:1"
+      alt_text_required: true
+      semantic_html: true
+
+    personalization:
+      variable_standardization: true
+      language_localization: true
+      cultural_adaptation: true
+      legal_terminology: true
+
+    compliance_validation:
+      content_checks: true
+      requirement_validation: true
+      jurisdiction_rules: true
+      automated_testing: true
+
+# Risk Scoring Matrix
+risk_scoring_matrix:
+  data_sensitivity_weights:
+    basic_contact: 5
+    identification: 15
+    financial: 25
+    health: 35
+    biometric: 40
+    genetic: 45
+    nric: 50  # Singapore specific
+    ssn: 45    # US specific
+
+  volume_multipliers:
+    small: {"max": 100, "multiplier": 1.0}
+    medium: {"max": 1000, "multiplier": 1.2}
+    large: {"max": 10000, "multiplier": 1.5}
+    massive: {"max": float("inf"), "multiplier": 2.0}
+
+  risk_level_thresholds:
+    low: {"min": 0, "max": 30, "color": "green"}
+    medium: {"min": 31, "max": 60, "color": "yellow"}
+    high: {"min": 61, "max": 80, "color": "orange"}
+    critical: {"min": 81, "max": 100, "color": "red"}
+
+# Notification Channel Priorities
+notification_channels:
+  email:
+    priority: 1
+    use_cases: ["formal_notifications", "regulatory_reports", "detailed_information"]
+    delivery_confirmation: true
+
+  sms:
+    priority: 2
+    use_cases: ["urgent_alerts", "deadline_reminders", "escalation_notifications"]
+    delivery_confirmation: true
+
+  slack:
+    priority: 3
+    use_cases: ["team_notifications", "internal_alerts", "status_updates"]
+    delivery_confirmation: false
+
+  webhook:
+    priority: 4
+    use_cases: ["automated_integrations", "system_notifications", "api_calls"]
+    delivery_confirmation: true
+
+  in_app:
+    priority: 5
+    use_cases: ["user_notifications", "status_updates", "interactive_elements"]
+    delivery_confirmation: true
