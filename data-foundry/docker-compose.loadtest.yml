@@ -92,8 +92,16 @@ services:
       - ENVIRONMENT=development
       - DEBUG=true
       - SECRET_KEY=dev-secret-key-change-in-production
+      - IP_HASH_SALT=gdpr-compliance-salt-min-32-chars-for-security-required!
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # GDPR Compliance Settings
+      - ENABLE_GDPR_AUDIT_LOGGING=true
+      - GDPR_CONSENT_STORAGE_RETENTION_DAYS=2555  # 7 years
+      - DATABASE_POOL_SIZE=20
+      - DATABASE_MAX_OVERFLOW=30
+      - ENABLE_RATE_LIMITING=true
+      - RATE_LIMIT_REQUESTS_PER_MINUTE=100
     depends_on:
       db:
         condition: service_healthy
@@ -110,10 +118,10 @@ services:
       retries: 3
       start_period: 40s
 
-  # NEW: K6 Load Testing Service
+  # K6 General Load Testing Service
   k6:
     image: grafana/k6:latest
-    container_name: data_foundry_k6
+    container_name: data_foundry_k6_general
     environment:
       - BASE_URL=http://api:8000
       - API_TOKEN=${API_TOKEN:-}
@@ -124,8 +132,26 @@ services:
       api:
         condition: service_healthy
     profiles:
-      - loadtest
-    command: run --out json=/results/ramp-up.json tests/load/k6-ramp-up.js
+      - general-load
+    command: run --out json=/results/general-load.json tests/load/k6-ramp-up.js
+    restart: "no"
+
+  # K6 GDPR Compliance Load Testing Service
+  k6-gdpr:
+    image: grafana/k6:latest
+    container_name: data_foundry_k6_gdpr
+    environment:
+      - BASE_URL=http://api:8000
+      - API_TOKEN=${API_TOKEN:-}
+    volumes:
+      - ./tests:/tests
+      - ./results:/results
+    depends_on:
+      api:
+        condition: service_healthy
+    profiles:
+      - gdpr-load
+    command: run --out json=/results/gdpr-compliance.json tests/load/gdpr-compliance-k6.js
     restart: "no"
 
 volumes:

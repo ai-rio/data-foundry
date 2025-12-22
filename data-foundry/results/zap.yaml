@@ -3,7 +3,7 @@ env:
   - excludePaths: []
     name: baseline
     urls:
-    - http://localhost:8000
+    - http://api:8000
   parameters:
     failOnError: true
     progressToStdout: false
@@ -14,7 +14,7 @@ jobs:
   type: passiveScan-config
 - parameters:
     maxDuration: 1
-    url: http://localhost:8000
+    url: http://api:8000
   type: spider
 - parameters:
     maxDuration: 0
@@ -27,7 +27,7 @@ jobs:
 - parameters:
     reportDescription: ''
     reportDir: /zap/wrk/
-    reportFile: gl-sast-report.json
+    reportFile: security-baseline.html
     reportTitle: ZAP Scanning Report
-    template: traditional-json
+    template: traditional-html
   type: report

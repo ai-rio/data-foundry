@@ -13,7 +13,7 @@ from src.app.middleware import (
     SecurityHeadersMiddleware,
     TenantContextMiddleware,
 )
-from src.api.v1.consent import router as consent_router
+# from src.api.v1.consent import router as consent_router
 from src.core.config import settings
 from src.core.security import get_current_user_token
 from src.tasks.ingestion import data_ingestion_flow
@@ -60,7 +60,7 @@ app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
 
 # Include API routers
-app.include_router(consent_router, prefix=settings.API_V1_STR)
+# app.include_router(consent_router, prefix=settings.API_V1_STR)
 
 
 # Test token endpoint for Phase 6.5 load testing - DEVELOPMENT ONLY

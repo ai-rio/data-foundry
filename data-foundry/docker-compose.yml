@@ -9,7 +9,7 @@ services:
       POSTGRES_PASSWORD: foundry_password
       POSTGRES_DB: data_foundry
     ports:
-      - "5432:5432"
+      - "5433:5432"  # Use 5433 to avoid conflict with system PostgreSQL
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./docker/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
@@ -42,7 +42,7 @@ services:
     image: redis:7-alpine
     container_name: data_foundry_redis
     ports:
-      - "6379:6379"
+      - "6380:6379"  # Use 6380 to avoid conflict with system Redis
     volumes:
       - redis_data:/data
     healthcheck:
@@ -77,13 +77,21 @@ services:
       - "8000:8000"
     environment:
       - DATABASE_URL=postgresql+asyncpg://foundry_user:foundry_password@db:5432/data_foundry
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://redis:6379/0  # Docker internal port (not 6380)
       - LABEL_STUDIO_URL=http://label-studio:8080
       - ENVIRONMENT=development
       - DEBUG=true
       - SECRET_KEY=dev-secret-key-change-in-production
+      - IP_HASH_SALT=gdpr-compliance-salt-min-32-chars-for-security-required!
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # GDPR Compliance Settings
+      - ENABLE_GDPR_AUDIT_LOGGING=true
+      - GDPR_CONSENT_STORAGE_RETENTION_DAYS=2555  # 7 years
+      - DATABASE_POOL_SIZE=20
+      - DATABASE_MAX_OVERFLOW=30
+      - ENABLE_RATE_LIMITING=true
+      - RATE_LIMIT_REQUESTS_PER_MINUTE=100
     depends_on:
       db:
         condition: service_healthy
