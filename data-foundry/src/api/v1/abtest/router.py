@@ -841,3 +841,41 @@ async def update_variant_ratio(
         test_id=test_id,
         variant_ratio=request.variant_ratio
     )
+
+
+# ============================================================================
+# METRICS AGGREGATION (for Admin API)
+# ============================================================================
+
+async def get_abtest_metrics() -> Dict[str, Any]:
+    """
+    Get aggregated A/B test metrics.
+
+    Returns aggregated metrics across all A/B tests for admin dashboard.
+    """
+    with _storage_lock:
+        total_tests = len(_test_ids)
+        total_samples = 0
+        control_count = 0
+        variant_count = 0
+
+        for test_id in _test_ids:
+            metrics_collector = _metrics_storage.get(test_id)
+            if metrics_collector:
+                all_metrics = metrics_collector.get_all_metrics()
+                for treatment_name, treatment_data in all_metrics.items():
+                    if treatment_name != "comparison":
+                        samples = treatment_data.get("total_samples", 0)
+                        total_samples += samples
+                        # Estimate control/variant split
+                        if "control" in treatment_name.lower():
+                            control_count += samples
+                        else:
+                            variant_count += samples
+
+    return {
+        "total_tests": total_tests,
+        "total_samples": total_samples,
+        "control_count": control_count,
+        "variant_count": variant_count
+    }
