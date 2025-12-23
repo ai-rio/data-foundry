@@ -222,6 +222,11 @@ class Settings(BaseSettings):
     MIN_QUALITY_SCORE: float = 0.5
     STAGING_DIRECTORY: str = "data_foundry_staging"
 
+    # A/B Testing Configuration (Week 2: A/B Testing Framework)
+    ENABLE_AB_TESTING: bool = False
+    AB_TEST_RATIO: float = 0.5  # 50% to treatment
+    AB_TEST_NAME: str = "validation_strategy_v1"
+
     # Monitoring and Logging
     LOG_LEVEL: str = "INFO"
     ENABLE_METRICS: bool = True

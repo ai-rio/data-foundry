@@ -6,8 +6,9 @@ This demonstrates the "Glue" integration between Prefect and dlt
 import asyncio
 import hashlib
 import json
+import logging
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 from dlt import pipeline
 from dlt.destinations import postgres
@@ -15,7 +16,12 @@ from prefect import flow, get_run_logger, task
 
 from src.core.config import settings
 from src.core.data_quality import DataQualityValidator, ValidationResult
+from src.core.ab_testing_wrapper import ABTestingWrapper
 import re
+
+
+# Module logger
+logger = logging.getLogger(__name__)
 
 
 # PII Redaction Support - Track Presidio availability
@@ -26,7 +32,6 @@ try:
     PRESIDIO_AVAILABLE = True
 except ImportError:
     PRESIDIO_AVAILABLE = False
-    logger = logging.getLogger(__name__)
     logger.warning(
         "Presidio not installed - PII redaction will be skipped. "
         "Install with: pip install presidio-analyzer presidio-anonymizer"
@@ -221,6 +226,175 @@ def validate_schema(data: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], l
         f"Schema validation complete: {len(valid_records)} valid, {len(invalid_records)} invalid"
     )
     return valid_records, invalid_records
+
+
+@task
+async def validate_with_ab_testing(
+    records: list[dict[str, Any]],
+    control_validator: Callable[[dict[str, Any]], ValidationResult],
+    variant_validator: Callable[[dict[str, Any]], ValidationResult],
+    ab_ratio: float | None = None
+) -> dict[str, Any]:
+    """
+    Run A/B test comparing two validation strategies.
+
+    WHY:
+    - Enables comparison of different validation approaches
+    - Provides data-driven decisions about validation strategy effectiveness
+    - Allows gradual rollout of new validation logic with safety monitoring
+
+    HOW:
+    - Uses ABTestingWrapper for deterministic treatment assignment
+    - Routes records to control or variant validator based on record_id hash
+    - Collects metrics via BasicMetricsCollector for comparison
+    - Falls back to control validator when A/B testing is disabled
+
+    Args:
+        records: List of data records to validate (must have record_id field)
+        control_validator: Control strategy validation function
+            Signature: (record: Dict) -> ValidationResult
+        variant_validator: Variant strategy validation function
+            Signature: (record: Dict) -> ValidationResult
+        ab_ratio: Fraction of traffic to route to variant (0.0-1.0)
+            Defaults to settings.AB_TEST_RATIO if not specified
+
+    Returns:
+        Dictionary with:
+        - control_results: Validation results for control group
+        - variant_results: Validation results for variant group
+        - metrics: Comparison metrics from BasicMetricsCollector
+        - total_processed: Total number of records processed
+
+    Example:
+        >>> from src.core.data_quality import DataQualityValidator
+        >>> validator = DataQualityValidator()
+        >>> result = await validate_with_ab_testing(
+        ...     records=records,
+        ...     control_validator=validator.validate_record,
+        ...     variant_validator=variant_validator.validate_record,
+        ...     ab_ratio=0.3
+        ... )
+        >>> print(f"Control: {len(result['control_results'])}, "
+        ...       f"Variant: {len(result['variant_results'])}")
+    """
+    logger = get_run_logger()
+
+    # Use default ratio from settings if not specified
+    if ab_ratio is None:
+        ab_ratio = settings.AB_TEST_RATIO
+
+    # Check if A/B testing is enabled
+    if not settings.ENABLE_AB_TESTING:
+        logger.info(
+            "A/B testing disabled (ENABLE_AB_TESTING=False) - "
+            "using control validator for all records"
+        )
+
+        # Fallback to standard validation using control validator
+        control_results = []
+        for record in records:
+            try:
+                result: ValidationResult = control_validator(record)
+                control_results.append({
+                    "record_id": record.get("record_id"),
+                    "is_valid": result.is_valid,
+                    "quality_score": result.quality_score,
+                    "completeness_score": result.completeness_score,
+                    "validity_score": result.validity_score,
+                    "errors": result.errors,
+                    "warnings": result.warnings,
+                    "treatment": "control",
+                    "is_variant": False
+                })
+            except Exception as e:
+                logger.error(f"Control validation error for record {record.get('record_id')}: {str(e)}")
+                control_results.append({
+                    "record_id": record.get("record_id"),
+                    "is_valid": False,
+                    "quality_score": 0.0,
+                    "completeness_score": 0.0,
+                    "validity_score": 0.0,
+                    "errors": [f"Validation exception: {str(e)}"],
+                    "warnings": [],
+                    "treatment": "control",
+                    "is_variant": False
+                })
+
+        return {
+            "control_results": control_results,
+            "variant_results": [],
+            "metrics": {},
+            "total_processed": len(records)
+        }
+
+    # Initialize A/B testing wrapper
+    logger.info(
+        f"A/B testing enabled - test_name={settings.AB_TEST_NAME}, "
+        f"ratio={ab_ratio:.1%}, processing {len(records)} records"
+    )
+
+    wrapper = ABTestingWrapper(
+        test_name=settings.AB_TEST_NAME,
+        treatment_ratio=ab_ratio
+    )
+
+    control_results: list[dict[str, Any]] = []
+    variant_results: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+
+    for record in records:
+        try:
+            # Validate with A/B treatment assignment
+            ab_result = wrapper.validate_with_ab_info(
+                record=record,
+                control_validator=control_validator,
+                variant_validator=variant_validator
+            )
+
+            result_dict = {
+                "record_id": record.get("record_id"),
+                "treatment": ab_result.treatment,
+                "is_variant": ab_result.is_variant,
+                "is_valid": ab_result.validation_result.is_valid,
+                "quality_score": ab_result.validation_result.quality_score,
+                "completeness_score": ab_result.validation_result.completeness_score,
+                "validity_score": ab_result.validation_result.validity_score,
+                "errors": ab_result.validation_result.errors,
+                "warnings": ab_result.validation_result.warnings
+            }
+
+            # Sort results by treatment
+            if ab_result.is_variant:
+                variant_results.append(result_dict)
+            else:
+                control_results.append(result_dict)
+
+        except Exception as e:
+            logger.error(f"A/B validation error for record {record.get('record_id')}: {str(e)}")
+            errors.append({
+                "record_id": record.get("record_id"),
+                "error": str(e)
+            })
+
+    # Get metrics from wrapper
+    metrics = wrapper.get_metrics()
+    stats = wrapper.get_stats()
+
+    logger.info(
+        f"A/B testing complete: control={len(control_results)}, "
+        f"variant={len(variant_results)}, errors={len(errors)}"
+    )
+    logger.info(
+        f"Treatment distribution: {stats['control_count']} control, "
+        f"{stats['variant_count']} variant (total: {stats['total_samples']})"
+    )
+
+    return {
+        "control_results": control_results,
+        "variant_results": variant_results,
+        "metrics": metrics,
+        "total_processed": len(records)
+    }
 
 
 @task
