@@ -6,7 +6,7 @@ This implements a contract-first approach for API design and documentation.
 
 SECURITY HARDENING - Week 4 Phase 2.2:
 - Input validation via Pydantic models
-- Size limits on request payloads
+- Size limits on request payloads (HIGH #1)
 - Field validators for ratio bounds
 """
 
@@ -67,6 +67,38 @@ class CreateABTestRequest(BaseModel):
             )
         return v.strip()
 
+    @field_validator('*')
+    @classmethod
+    def validate_request_size(cls, v: Any, info) -> Any:
+        """
+        Validate request size to prevent memory exhaustion (HIGH #1).
+
+        Ensures the JSON representation of the entire request doesn't exceed 1MB.
+        This prevents potential denial-of-service attacks through oversized requests.
+        Pattern reference: src/api/v1/quality/contracts.py:30-53
+        """
+        import json
+        # Only validate once, on the last field
+        if info.field_name != "variant_name":
+            return v
+
+        # Get the full model as dict
+        if hasattr(info, 'data'):
+            try:
+                request_json = json.dumps(info.data)
+                size_bytes = len(request_json.encode('utf-8'))
+                max_size = 1 * 1024 * 1024  # 1MB
+
+                if size_bytes > max_size:
+                    raise ValueError(
+                        f"Request size exceeds maximum allowed size of {max_size} bytes. "
+                        f"Got {size_bytes} bytes."
+                    )
+            except (TypeError, OverflowError) as e:
+                raise ValueError(f"Invalid request format: {str(e)}")
+
+        return v
+
     class Config:
         json_schema_extra = {
             "example": {
@@ -114,6 +146,38 @@ class RecordPredictionRequest(BaseModel):
         """Ensure sample_id is not empty or just whitespace."""
         if not v or not v.strip():
             raise ValueError("sample_id cannot be empty")
+        return v
+
+    @field_validator('ground_truth')
+    @classmethod
+    def validate_request_size(cls, v: Any, info) -> Any:
+        """
+        Validate request size to prevent memory exhaustion (HIGH #1).
+
+        Ensures the JSON representation of the entire request doesn't exceed 1MB.
+        This prevents potential denial-of-service attacks through oversized requests.
+        Pattern reference: src/api/v1/quality/contracts.py:30-53
+        """
+        import json
+        # Only validate once, on the last field
+        if info.field_name != "ground_truth":
+            return v
+
+        # Get the full model as dict
+        if hasattr(info, 'data'):
+            try:
+                request_json = json.dumps(info.data)
+                size_bytes = len(request_json.encode('utf-8'))
+                max_size = 1 * 1024 * 1024  # 1MB
+
+                if size_bytes > max_size:
+                    raise ValueError(
+                        f"Request size exceeds maximum allowed size of {max_size} bytes. "
+                        f"Got {size_bytes} bytes."
+                    )
+            except (TypeError, OverflowError) as e:
+                raise ValueError(f"Invalid request format: {str(e)}")
+
         return v
 
     class Config:

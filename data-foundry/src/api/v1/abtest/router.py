@@ -5,11 +5,12 @@ Implements A/B testing endpoints following REST principles and OpenAPI standards
 This handles HTTP requests, validation, and response formatting for A/B test operations.
 
 SECURITY HARDENING - Week 4 Phase 2.2 Fixes Applied:
-- Admin authorization on PUT /ratio
-- Rate limiting using in-memory IP tracker
-- Bounded memory using deque(maxlen)
-- Thread safety with threading.Lock
-- Tenant isolation checks
+- CRITICAL #1: Admin authorization on PUT /ratio
+- CRITICAL #2: Rate limiting using in-memory IP tracker
+- CRITICAL #3: Bounded memory using deque(maxlen=10000) for storage
+- CRITICAL #4: Thread safety with threading.Lock
+- CRITICAL #5: Tenant isolation checks (_check_tenant_access)
+- HIGH #6: Request size validation (max 1MB per request)
 - Generic error messages (no information disclosure)
 - Hashed user IDs in logs
 - Async I/O with asyncio.to_thread
@@ -160,21 +161,30 @@ async def _rate_limit_admin(request: Request) -> None:
 
 
 # ============================================================================
-# IN-MEMORY TEST STORAGE
+# IN-MEMORY TEST STORAGE (CRITICAL #2: Bounded Storage)
 # ============================================================================
 
 # WARNING: This is stored in-memory and will be lost on restart.
 # Future enhancement: Persist to database for durability.
 # Thread safety added via locks
+# CRITICAL #2: Using deque with maxlen to prevent unbounded memory growth
+# Pattern reference: src/api/v1/quality/router.py:193-203
 _storage_lock = threading.Lock()
 
-# In-memory storage for A/B tests with bounded size
+# Track test IDs with bounded size (max 10000 active tests)
+# When deque is full, oldest test IDs are automatically removed
+_test_ids: deque = deque(maxlen=10000)
+
+# In-memory storage for A/B tests
 # test_id -> test data
 _tests_storage: Dict[str, Dict[str, Any]] = {}
 
-# In-memory storage for metrics collectors
+# In-memory storage for metrics collectors with bounded size
 # test_id -> BasicMetricsCollector
 _metrics_storage: Dict[str, BasicMetricsCollector] = {}
+
+# Maximum number of tests to store
+_MAX_TESTS = 10000
 
 
 def generate_test_id() -> str:
@@ -221,6 +231,27 @@ async def _require_admin(current_user: dict = Depends(get_current_user_token)) -
     return current_user
 
 
+def _check_tenant_access(test_data: Dict[str, Any], current_user: dict) -> None:
+    """
+    Verify user can only access their own tenant's data (CRITICAL #5).
+
+    Raises HTTPException if tenant_id in test doesn't match user's tenant.
+    Pattern reference: src/api/v1/quality/router.py:319-336
+    """
+    user_tenant_id = current_user.get("tenant_id")
+    test_tenant_id = test_data.get("tenant_id")
+
+    if test_tenant_id and user_tenant_id and test_tenant_id != user_tenant_id:
+        logger.warning(
+            f"Tenant access denied: user {_hash_user_id(current_user.get('user_id', 'unknown'))} "
+            f"attempted to access tenant {test_tenant_id}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: cannot access tests from other tenants"
+        )
+
+
 # ============================================================================
 # TEST ISOLATION HELPERS
 # ============================================================================
@@ -244,8 +275,9 @@ def reset_test_storage_for_testing() -> None:
     Clears all accumulated test data. Use this in test fixtures
     to ensure test isolation.
     """
-    global _tests_storage, _metrics_storage
+    global _tests_storage, _metrics_storage, _test_ids
     with _storage_lock:
+        _test_ids.clear()
         _tests_storage.clear()
         _metrics_storage.clear()
 
@@ -333,6 +365,9 @@ async def create_ab_test(
     test_id = generate_test_id()
     created_at = datetime.now(timezone.utc)
 
+    # CRITICAL #1: Extract and store tenant_id from JWT
+    tenant_id = current_user.get("tenant_id", "default")
+
     # Create AB testing controller
     controller = ABTestingController(
         variant_ratio=request.variant_ratio,
@@ -347,6 +382,17 @@ async def create_ab_test(
 
     # Store test data (thread-safe)
     with _storage_lock:
+        # CRITICAL #2: Add test_id to bounded deque - automatically removes oldest when full
+        _test_ids.append(test_id)
+
+        # Clean up oldest test data if deque was full
+        if len(_test_ids) == _MAX_TESTS and test_id not in _tests_storage:
+            oldest_test_id = _test_ids[0]
+            if oldest_test_id in _tests_storage:
+                del _tests_storage[oldest_test_id]
+            if oldest_test_id in _metrics_storage:
+                del _metrics_storage[oldest_test_id]
+
         _tests_storage[test_id] = {
             "test_id": test_id,
             "test_name": request.test_name,
@@ -357,6 +403,7 @@ async def create_ab_test(
             "created_at": created_at,
             "status": "active",
             "controller": controller,
+            "tenant_id": tenant_id,  # CRITICAL #1: Store tenant_id
         }
         _metrics_storage[test_id] = metrics_collector
 
@@ -401,13 +448,22 @@ async def list_ab_tests(
     List all A/B tests.
 
     Returns metadata for all A/B tests including configuration and status.
+    CRITICAL #1: Returns only tests belonging to the user's tenant.
     """
+    # CRITICAL #1: Get user's tenant_id for filtering
+    user_tenant_id = current_user.get("tenant_id")
+
     with _storage_lock:
         test_list = list(_tests_storage.values())
 
-    # Convert to response models
+    # Convert to response models with tenant filtering
     tests_metadata = []
     for test_data in test_list:
+        # CRITICAL #1: Only include tests from user's tenant
+        test_tenant_id = test_data.get("tenant_id")
+        if test_tenant_id and user_tenant_id and test_tenant_id != user_tenant_id:
+            continue
+
         tests_metadata.append(
             ABTestMetadata(
                 test_id=test_data["test_id"],
@@ -442,6 +498,7 @@ async def list_ab_tests(
     responses={
         200: {"description": "Statistics retrieved successfully"},
         401: {"model": ErrorResponse, "description": "Unauthorized"},
+        403: {"model": ErrorResponse, "description": "Access denied"},
         404: {"model": ErrorResponse, "description": "Test not found"},
         429: {"model": ErrorResponse, "description": "Rate limit exceeded"},
         500: {"model": ErrorResponse, "description": "Server error"},
@@ -458,6 +515,7 @@ async def get_test_stats(
     Get A/B test statistics.
 
     Returns traffic distribution statistics for the specified test.
+    CRITICAL #1: Enforces tenant isolation.
     """
     with _storage_lock:
         if test_id not in _tests_storage:
@@ -468,6 +526,10 @@ async def get_test_stats(
             )
 
         test_data = _tests_storage[test_id]
+
+        # CRITICAL #1: Check tenant access
+        _check_tenant_access(test_data, current_user)
+
         controller: ABTestingController = test_data["controller"]
 
     # Get statistics from controller
@@ -494,6 +556,7 @@ async def get_test_stats(
         200: {"description": "Prediction recorded successfully"},
         400: {"model": ErrorResponse, "description": "Invalid request"},
         401: {"model": ErrorResponse, "description": "Unauthorized"},
+        403: {"model": ErrorResponse, "description": "Access denied"},
         404: {"model": ErrorResponse, "description": "Test not found"},
         429: {"model": ErrorResponse, "description": "Rate limit exceeded"},
         500: {"model": ErrorResponse, "description": "Server error"},
@@ -511,6 +574,7 @@ async def record_prediction(
     Record a prediction for an A/B test.
 
     Records a prediction with the associated treatment and optional ground truth.
+    CRITICAL #1: Enforces tenant isolation.
     """
     with _storage_lock:
         if test_id not in _tests_storage:
@@ -519,6 +583,11 @@ async def record_prediction(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="A/B test not found"
             )
+
+        test_data = _tests_storage[test_id]
+
+        # CRITICAL #1: Check tenant access
+        _check_tenant_access(test_data, current_user)
 
         metrics_collector = _metrics_storage.get(test_id)
         if metrics_collector is None:
@@ -558,6 +627,7 @@ async def record_prediction(
     responses={
         200: {"description": "Metrics retrieved successfully"},
         401: {"model": ErrorResponse, "description": "Unauthorized"},
+        403: {"model": ErrorResponse, "description": "Access denied"},
         404: {"model": ErrorResponse, "description": "Test not found"},
         429: {"model": ErrorResponse, "description": "Rate limit exceeded"},
         500: {"model": ErrorResponse, "description": "Server error"},
@@ -575,6 +645,7 @@ async def get_test_metrics(
 
     Returns comprehensive metrics including precision, recall, F1, accuracy
     for each treatment, plus comparison data.
+    CRITICAL #1: Enforces tenant isolation.
     """
     with _storage_lock:
         if test_id not in _tests_storage:
@@ -585,6 +656,10 @@ async def get_test_metrics(
             )
 
         test_data = _tests_storage[test_id]
+
+        # CRITICAL #1: Check tenant access
+        _check_tenant_access(test_data, current_user)
+
         test_name = test_data["test_name"]
         metrics_collector = _metrics_storage.get(test_id)
 
@@ -639,6 +714,7 @@ async def get_test_metrics(
     responses={
         200: {"description": "Metrics exported successfully"},
         401: {"model": ErrorResponse, "description": "Unauthorized"},
+        403: {"model": ErrorResponse, "description": "Access denied"},
         404: {"model": ErrorResponse, "description": "Test not found"},
         429: {"model": ErrorResponse, "description": "Rate limit exceeded"},
         500: {"model": ErrorResponse, "description": "Server error"},
@@ -655,6 +731,7 @@ async def export_test_metrics(
     Export A/B test metrics as JSON.
 
     Returns all metrics data in JSON format for external analysis.
+    CRITICAL #1: Enforces tenant isolation.
     """
     with _storage_lock:
         if test_id not in _tests_storage:
@@ -665,6 +742,10 @@ async def export_test_metrics(
             )
 
         test_data = _tests_storage[test_id]
+
+        # CRITICAL #1: Check tenant access
+        _check_tenant_access(test_data, current_user)
+
         test_name = test_data["test_name"]
         description = test_data.get("description")
         metrics_collector = _metrics_storage.get(test_id)
@@ -726,6 +807,7 @@ async def update_variant_ratio(
 
     Adjusts the traffic split for the specified A/B test.
     Requires administrator role.
+    CRITICAL #1: Enforces tenant isolation.
     """
     with _storage_lock:
         if test_id not in _tests_storage:
@@ -736,6 +818,10 @@ async def update_variant_ratio(
             )
 
         test_data = _tests_storage[test_id]
+
+        # CRITICAL #1: Check tenant access
+        _check_tenant_access(test_data, current_user)
+
         controller: ABTestingController = test_data["controller"]
 
     # Update the variant ratio
