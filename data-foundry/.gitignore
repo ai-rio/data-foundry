@@ -194,5 +194,9 @@ logs/
 tmp/
 temp/
 
-# test results 
+# test results
 results/
+
+# Large data and result files
+*.json
+*.html
