@@ -13,6 +13,9 @@ from src.app.middleware import (
     SecurityHeadersMiddleware,
     TenantContextMiddleware,
 )
+
+from src.api.v1.consent.router import router as consent_router
+from src.api.v1.quality.router import router as quality_router  # CRITICAL #2 - Rate limiting (custom in-memory)
 from src.core.config import settings
 from src.core.security import get_current_user_token
 from src.tasks.ingestion import data_ingestion_flow
@@ -44,12 +47,20 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Note: Rate limiting is handled per-router using custom in-memory limiters
+# (CRITICAL #2 - Week 4 Phase 2.1)
+
 
 # Add custom middleware
 app.add_middleware(CustomCORSMiddleware)
 app.add_middleware(TenantContextMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
+
+
+# Include API routers
+app.include_router(consent_router, prefix="/api/v1")
+app.include_router(quality_router, prefix="/api/v1")
 
 
 

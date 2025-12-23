@@ -176,6 +176,7 @@ async def get_current_user_token(
     return {
         "user_id": user_id,
         "tenant_id": tenant_id,
+        "role": payload.get("role"),  # CRITICAL #1: Include role from token for admin authorization
         "exp": payload.get("exp"),
         "token": token,
     }

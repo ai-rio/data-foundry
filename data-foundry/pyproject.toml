@@ -18,6 +18,7 @@ dependencies = [
     # Core API Framework
     "fastapi>=0.104.0",
     "uvicorn[standard]>=0.24.0",
+    "slowapi>=0.1.9",  # CRITICAL #2 - Rate limiting (Week 4 Phase 2.1)
     # Database & Models
     "sqlmodel>=0.0.27",
     "sqlalchemy>=2.0.45",
