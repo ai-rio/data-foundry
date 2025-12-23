@@ -161,9 +161,14 @@ RedditHarbor Pipeline-v4 → Data Foundry: Comprehensive Extraction Plan
 
  Dependencies
 
- None required! All existing in data_foundry:
+ Week 1 & Week 2:
  - Pydantic (already installed)
  - Standard library: json, hashlib, re, pathlib, datetime
+
+ Week 3 (ML capabilities - optional):
+ - scikit-learn>=1.5.0  # Random Forest, TF-IDF vectorization
+ - joblib>=1.4.0        # Model serialization/deserialization
+ - numpy>=1.26.0        # Feature arrays and numerical operations
 
  ---
  Week 1 Success Criteria
@@ -264,11 +269,18 @@ RedditHarbor Pipeline-v4 → Data Foundry: Comprehensive Extraction Plan
  - All validation tests pass
 
  ---
- WEEK 3: Signal Detection Framework (2-3 days)
+ WEEK 3: Signal Detection - Rule-Based + ML Infrastructure (3-4 days)
 
- Component to Extract
+ **NEW: ML Capabilities Added**
+ - Week 3 now includes ML infrastructure extraction (ml_signal_detector.py, feature_extractor.py)
+ - Random Forest classifier with 92.8% ROC-AUC performance
+ - Feature engineering pipeline with 114 features (TF-IDF + signals + metadata)
+ - A/B testing framework to compare rule-based vs ML approaches
+ - Model retraining pipeline for Data Foundry-specific labels
 
- SignalDetector (EXTRACT from pipeline-v4)
+ Components to Extract
+
+ 1. Rule-Based SignalDetector (EXTRACT from pipeline-v4)
 
  Source: /home/carlos/projects/pipeline-v4/transform/signal_detector.py (252 lines)
 
@@ -279,6 +291,42 @@ RedditHarbor Pipeline-v4 → Data Foundry: Comprehensive Extraction Plan
  - Evidence extraction
 
  Integration: After data quality validation, before AI labeling
+
+ 2. ML Signal Detector Infrastructure (EXTRACT from pipeline-v4)
+
+ Source: /home/carlos/projects/pipeline-v4/core/ml_signal_detector.py (329 lines)
+
+ What it provides:
+ - Production ML inference wrapper (lazy loading)
+ - Feature validation and error handling
+ - Batch and single sample prediction
+ - Trained Random Forest: 92.8% ROC-AUC, 59.3% PR-AUC
+
+ **CRITICAL**: Model file (random_forest_v1.joblib) trained on Reddit data - NOT directly usable
+ **Action Required**: Retrain on Data Foundry data (labels: auto-approved vs human-reviewed)
+
+ 3. Feature Extraction Infrastructure (EXTRACT from pipeline-v4)
+
+ Source: /home/carlos/projects/pipeline-v4/transform/feature_extractor.py (~250 lines)
+
+ What it provides:
+ - TF-IDF vectorization patterns (100 text features)
+ - Categorical encoding utilities
+ - Log transformations for engagement metrics
+ - Feature validation framework
+ - 114-feature pipeline (100 TF-IDF + 8 signals + 6 metadata)
+
+ **Adaptation**: Retrain TF-IDF on Data Foundry text content (raw_data, data_preview fields)
+
+ 4. A/B Test: Rule-Based vs ML (NEW - Uses Week 2 A/B Framework)
+
+ Purpose: Compare rule-based signal detection vs ML-based quality prediction
+
+ Setup:
+ - Control: Rule-based SignalDetector (proven 60-95% reduction)
+ - Treatment: ML-based quality predictor (retrained on Data Foundry data)
+ - Metrics: Precision, recall, F1, cost savings, processing time
+ - Duration: 2-4 weeks data collection post-deployment
 
  Signal Types Detected:
 
@@ -326,17 +374,22 @@ RedditHarbor Pipeline-v4 → Data Foundry: Comprehensive Extraction Plan
  ---
  Week 3 Implementation Details
 
- Files to Create (3 files)
+ Files to Create (8 files)
 
- src/core/signal_detector.py         # 252 lines (from pipeline-v4)
- src/core/signal_patterns.py         # Configurable patterns (NEW)
- tests/unit/test_signal_detector.py  # Adapt from pipeline-v4
+ src/core/signal_detector.py          # 252 lines (from pipeline-v4)
+ src/core/signal_patterns.py          # Configurable patterns (NEW)
+ src/ml/quality_predictor.py          # ~300 lines (adapt ml_signal_detector.py)
+ src/ml/feature_engineering.py        # ~250 lines (adapt feature_extractor.py)
+ src/ml/model_training.py              # ~200 lines (NEW - retraining pipeline)
+ scripts/train_quality_model.py        # ~150 lines (NEW - training script)
+ tests/unit/test_signal_detector.py    # Adapt from pipeline-v4
+ tests/unit/test_ml_quality_predictor.py # NEW
 
  Files to Modify (3 files)
 
- src/tasks/ingestion.py     # Add detect_signals task
+ src/tasks/ingestion.py     # Add detect_signals task + ML quality prediction
  src/services/ai_service.py  # Signal-aware processing
- src/models/data_record.py   # Add signal metadata fields
+ src/models/data_record.py   # Add signal metadata + ML prediction fields
 
  Configuration
 
@@ -345,13 +398,32 @@ RedditHarbor Pipeline-v4 → Data Foundry: Comprehensive Extraction Plan
  SIGNAL_DETECTION_THRESHOLD: float = 70.0
  SIGNAL_PATTERNS_CONFIG: dict = {...}  # Customizable patterns
 
+ # ML Quality Prediction (NEW)
+ ENABLE_ML_QUALITY_PREDICTION: bool = False  # Enable after training
+ ML_MODEL_PATH: str = "models/quality_predictor_v1.joblib"
+ ML_FEATURE_ARTIFACTS_PATH: str = "models/feature_artifacts.pkl"
+ ML_PREDICTION_THRESHOLD: float = 0.5
+
  ---
  Week 3 Success Criteria
 
+ **Rule-Based Signal Detection:**
  - Signal detection achieves >80% precision, >70% recall
  - 60-95% reduction in AI processing costs
  - High-signal records prioritized
  - All tests pass
+
+ **ML Infrastructure:**
+ - ML inference wrapper successfully loads models
+ - Feature extraction pipeline validates 114-feature format
+ - A/B test framework routes traffic correctly (50/50 split)
+ - Model retraining documentation complete
+
+ **A/B Test Results (Post-deployment):**
+ - Collect 2-4 weeks of comparison data
+ - Determine which approach (rule-based vs ML) performs better
+ - Document precision, recall, F1 for both
+ - Calculate actual cost savings for both approaches
 
  ---
  Combined Cost Analysis
@@ -374,6 +446,11 @@ RedditHarbor Pipeline-v4 → Data Foundry: Comprehensive Extraction Plan
 
  Per-Tenant (100 tenants): $3.60-8.28/year savings per tenant
  Enterprise scale (10M records): $3,600-8,280/month savings
+
+ **ML Impact Note:**
+ ML-based quality prediction (92.8% ROC-AUC) may improve precision over rule-based detection,
+ potentially pushing savings toward the higher end of the range. A/B testing will determine
+ actual performance difference between rule-based and ML approaches.
 
  ---
  Customer Value Proposition
@@ -415,7 +492,10 @@ RedditHarbor Pipeline-v4 → Data Foundry: Comprehensive Extraction Plan
  ├── load/loader.py                      # ⭐ Week 1 - Pre-compiled queries
  ├── core/ab_testing_controller.py      # ⭐ Week 2 - A/B testing
  ├── core/basic_metrics.py               # ⭐ Week 2 - Metrics collection
- ├── transform/signal_detector.py        # ⭐ Week 3 - Signal detection
+ ├── transform/signal_detector.py        # ⭐ Week 3 - Signal detection (rule-based)
+ ├── core/ml_signal_detector.py          # ⭐ Week 3 - ML infrastructure (329 lines)
+ ├── transform/feature_extractor.py      # ⭐ Week 3 - Feature engineering (~250 lines)
+ ├── models/random_forest_v1_metadata.json # 📊 Week 3 - Model metadata (reference only)
  ├── scripts/validate_ab_framework.py    # ⭐ Week 2 - A/B validation
  ├── tests/test_staging.py               # ⭐ Week 1 - Test patterns
  └── data/validation_metrics.py          # ⭐ Reference - Validation framework
@@ -429,12 +509,21 @@ RedditHarbor Pipeline-v4 → Data Foundry: Comprehensive Extraction Plan
  │   ├── ab_testing_controller.py      # NEW - Week 2
  │   ├── basic_metrics.py              # NEW - Week 2
  │   ├── ab_testing_wrapper.py         # NEW - Week 2
- │   ├── signal_detector.py            # NEW - Week 3
+ │   ├── signal_detector.py            # NEW - Week 3 (rule-based)
  │   └── signal_patterns.py            # NEW - Week 3
- ├── tasks/ingestion.py                 # MODIFY - All weeks
- ├── services/ai_service.py             # MODIFY - Week 3
- ├── database/connection.py             # MODIFY - Week 1
- └── models/data_record.py              # MODIFY - Week 3
+ ├── ml/
+ │   ├── quality_predictor.py          # NEW - Week 3 (adapt ml_signal_detector.py)
+ │   ├── feature_engineering.py        # NEW - Week 3 (adapt feature_extractor.py)
+ │   └── model_training.py             # NEW - Week 3 (retraining pipeline)
+ ├── scripts/
+ │   └── train_quality_model.py        # NEW - Week 3 (training script)
+ ├── models/
+ │   ├── quality_predictor_v1.joblib   # FUTURE - Week 3+ (after training)
+ │   └── feature_artifacts.pkl         # FUTURE - Week 3+ (after training)
+ ├── tasks/ingestion.py                # MODIFY - All weeks
+ ├── services/ai_service.py            # MODIFY - Week 3
+ ├── database/connection.py            # MODIFY - Week 1
+ └── models/data_record.py             # MODIFY - Week 3
 
  ---
  Risk Assessment & Mitigation
