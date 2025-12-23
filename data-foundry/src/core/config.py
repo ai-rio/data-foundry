@@ -12,7 +12,7 @@ import os
 import logging
 
 from pydantic_settings import BaseSettings
-from pydantic import ConfigDict
+from pydantic import ConfigDict, Field, field_validator
 from src.core.secret_manager import SecretManager
 
 
@@ -49,15 +49,16 @@ class Settings(BaseSettings):
     APP_VERSION: str = "1.0.0"
     ENVIRONMENT: str = "development"
     DEBUG: bool = True
-    SECRET_KEY: str = "your-secret-key-change-in-production"
+    SECRET_KEY: str | None = Field(default=None)
 
     # API Settings
     API_V1_STR: str = "/api/v1"
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:8080"]
 
     # Database Configuration
-    DATABASE_URL: str = (
-        "postgresql://foundry_user:foundry_password@localhost:5432/data_foundry"
+    DATABASE_URL: str | None = Field(
+        default=None,
+        description="PostgreSQL database connection string"
     )
     DATABASE_POOL_SIZE: int = 10
     DATABASE_MAX_OVERFLOW: int = 20
@@ -216,6 +217,11 @@ class Settings(BaseSettings):
     ENABLE_PII_REDACTION: bool = True
     CONFIDENCE_THRESHOLD: float = 0.85  # Below this triggers human review
 
+    # Data Validation Configuration (Week 1: Data Validation + Database Optimization)
+    ENABLE_DATA_VALIDATION: bool = True
+    MIN_QUALITY_SCORE: float = 0.5
+    STAGING_DIRECTORY: str = "data_foundry_staging"
+
     # Monitoring and Logging
     LOG_LEVEL: str = "INFO"
     ENABLE_METRICS: bool = True
@@ -238,6 +244,32 @@ class Settings(BaseSettings):
     PROMPT_TRUNCATE_ENABLED: bool = False  # Whether to truncate long prompts
     PROMPT_COST_TRACKING: bool = True
 
+    @field_validator("SECRET_KEY")
+    @classmethod
+    def validate_secret_key(cls, v: str | None, info) -> str:
+        """Validate SECRET_KEY is set in production environments."""
+        if v is None:
+            # Allow development mode without SECRET_KEY
+            if info.data.get("ENVIRONMENT", "development") != "production":
+                return "dev-secret-key-for-testing-only"
+            raise ValueError(
+                "SECRET_KEY must be set via environment variable in production"
+            )
+        return v
+
+    @field_validator("DATABASE_URL")
+    @classmethod
+    def validate_database_url(cls, v: str | None, info) -> str:
+        """Validate DATABASE_URL is set."""
+        if v is None:
+            # For development, provide a default localhost connection
+            if info.data.get("ENVIRONMENT", "development") != "production":
+                return "postgresql://foundry_user:foundry_password@localhost:5432/data_foundry"
+            raise ValueError(
+                "DATABASE_URL must be set via environment variable in production"
+            )
+        return v
+
     model_config = ConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -252,6 +284,8 @@ class Settings(BaseSettings):
     @property
     def database_url_sync(self) -> str:
         """Get synchronous database URL."""
+        if self.DATABASE_URL is None:
+            raise ValueError("DATABASE_URL is not set")
         if self.DATABASE_URL.startswith("postgresql+asyncpg://"):
             return self.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
         return self.DATABASE_URL
@@ -259,6 +293,8 @@ class Settings(BaseSettings):
     @property
     def database_url_async(self) -> str:
         """Get asynchronous database URL."""
+        if self.DATABASE_URL is None:
+            raise ValueError("DATABASE_URL is not set")
         if not self.DATABASE_URL.startswith("postgresql+asyncpg://"):
             return self.DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
         return self.DATABASE_URL
