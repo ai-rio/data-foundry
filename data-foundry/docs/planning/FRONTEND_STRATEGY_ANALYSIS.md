@@ -1,7 +1,7 @@
 # Frontend Development Strategy Analysis
 ## Control Panel & User Flow Assessment
 
-**Analysis Date:** December 23, 2025
+**Analysis Date:** December 23, 2025 (Updated with codebase exploration)
 **Current Branch:** `feature/frontend-development`
 **Backend Status:** ✅ Week 4 Complete (131/132 tests, 19 API endpoints)
 
@@ -11,17 +11,25 @@
 
 ### Current State Assessment
 ✅ **Backend is Production-Ready**
-- 19 REST API endpoints across 5 modules
-- FastAPI with OpenAPI/Swagger documentation
-- JWT authentication and role-based authorization
+- 19 REST API endpoints across 6 modules (consent, quality, abtest, signals, ml, admin)
+- FastAPI with OpenAPI/Swagger documentation at `/docs` and `/redoc`
+- JWT authentication and role-based authorization (src/core/security.py)
 - Rate limiting, tenant isolation, thread safety
 - 99.2% test pass rate (131/132 tests)
+- 47,419 LOC of test code across 51 test files
+- PostgreSQL with Row-Level Security for multi-tenancy
+- Docker Compose with 5 services (PostgreSQL, Redis, Label Studio, Prefect, FastAPI)
 
-❌ **No Frontend Exists**
-- Zero React/Vue/Angular components
-- No UI framework installed
-- No frontend build system
-- API-only application currently
+⚠️ **Frontend Scaffolding Present (Not Implemented)**
+- `/frontend/` directory exists with minimal scaffolding
+- 7 TypeScript utility files present (api-client.ts, data-table.ts, parsers.ts, etc.)
+- `.env.local` configured with API URLs and Clerk auth placeholders
+- VSCode launch.json suggests Next.js was considered
+- ❌ **No package.json** (npm not initialized)
+- ❌ **No React/Vue/Angular components**
+- ❌ **No UI framework installed**
+- ❌ **No build system** (no Vite/Next.js/Webpack configuration)
+- ❌ **No node_modules** (dependencies not installed)
 
 ### Strategic Decision Required
 
@@ -42,6 +50,111 @@
 - Use Swagger UI for testing
 - Build frontend when user needs are validated
 - Fastest to production
+
+---
+
+## 0. Current Project State (Exploration Results)
+
+### Backend Architecture (VERIFIED ✅)
+
+**API Modules** (6 total):
+1. **Consent API** (`/api/v1/consent/`) - GDPR consent management
+2. **Quality API** (`/api/v1/quality/`) - Data quality validation
+3. **A/B Test API** (`/api/v1/abtest/`) - A/B testing framework
+4. **Signals API** (`/api/v1/signals/`) - Signal detection (5 types)
+5. **ML Predictor API** (`/api/v1/ml/`) - Quality prediction models
+6. **Admin API** (`/api/v1/admin/`) - Health monitoring, metrics, pipeline control
+
+**Database Models** (11 SQLModel classes in `/src/models/`):
+- user.py, tenant.py, data_record.py, processed_data.py
+- human_review_queue.py, consent.py, breach_notification.py
+- incident.py, usage_tracking.py, enums.py
+
+**Key Backend Files**:
+- Entry Point: `/src/main.py` (FastAPI application setup)
+- Security: `/src/core/security.py` (JWT auth, `get_current_user_token()`)
+- API Contracts: `/src/api/v1/{module}/contracts.py` (request/response schemas)
+- OpenAPI Spec: Available at `http://localhost:8000/openapi.json`
+
+### Frontend State (VERIFIED ⚠️)
+
+**Existing Utilities** (`/frontend/src/lib/`):
+```typescript
+api-client.ts      // API client stub (not fully implemented)
+data-table.ts      // Data table utilities
+font.ts            // Font configuration
+format.ts          // Formatting utilities (dates, numbers)
+parsers.ts         // Data parsing utilities
+searchparams.ts    // URL search parameter handling
+utils.ts           // General utilities (classNames, etc.)
+```
+
+**Environment Configuration** (`/frontend/.env.local`):
+```bash
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_...
+CLERK_SECRET_KEY=sk_test_...
+NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+NEXT_PUBLIC_API_V1_STR=/api/v1
+NEXT_PUBLIC_APP_NAME=Data Foundry
+NEXT_PUBLIC_APP_VERSION=1.0.0
+```
+
+**Missing Critical Components**:
+- ❌ No `package.json` - npm project not initialized
+- ❌ No `tsconfig.json` - TypeScript not configured
+- ❌ No `vite.config.ts` or `next.config.js` - Build system not configured
+- ❌ No React components - Zero `.tsx` files in components/
+- ❌ No pages - No routing structure
+- ❌ No state management - TanStack Query/Redux not installed
+- ❌ No UI framework - shadcn/ui/Material-UI not installed
+- ❌ No testing setup - Vitest/Jest/Playwright not configured
+
+**Frontend Technology Decision**:
+- Next.js debug config suggests it was considered initially
+- FRONTEND_STRATEGY_ANALYSIS.md recommends React + Vite + shadcn/ui
+- **Decision Required**: Next.js vs Vite?
+
+### Infrastructure (VERIFIED ✅)
+
+**Docker Compose Services** (5 containers):
+1. **PostgreSQL** (port 5433) - Primary database
+2. **Redis** (port 6380) - Caching and task queue
+3. **Label Studio** (port 8080) - Human annotation UI
+4. **Prefect Server** (port 4200) - Workflow orchestration
+5. **FastAPI** (port 8000) - Main application
+
+**Package Management**:
+- Backend: UV (Rust-based, ultra-fast) + pip
+- Frontend: Not initialized (recommend npm or pnpm)
+
+**Testing Infrastructure**:
+- pytest with asyncio support
+- 51 test files, 47,419 LOC of tests
+- Unit, integration, API, security, and performance tests
+- No E2E tests for frontend (not applicable yet)
+
+### Gaps Identified (NEW) ❌
+
+1. **No CI/CD Pipelines**
+   - No `.github/workflows/` directory
+   - No automated testing on commits
+   - No deployment automation
+   - **Opportunity**: Add GitHub Actions for testing and deployment
+
+2. **No Monitoring Dashboard**
+   - Admin API endpoints exist (`/health`, `/metrics`)
+   - No UI to visualize health and metrics
+   - Currently relying on Swagger UI for manual testing
+
+3. **No API Client Generation**
+   - OpenAPI spec available at `/openapi.json`
+   - No auto-generated TypeScript client
+   - **Opportunity**: Use openapi-generator or orval
+
+4. **No Frontend Testing Strategy**
+   - Backend has excellent test coverage (99.2%)
+   - No plan for frontend testing yet
+   - **Recommendation**: Vitest (unit) + Playwright (E2E)
 
 ---
 
@@ -594,37 +707,80 @@ develop (default branch)
 
 ---
 
-## 8. Recommendations
+## 8. Recommendations (UPDATED)
+
+### Critical Decision: Next.js vs Vite?
+
+**Evidence from exploration:**
+- `.env.local` has `NEXT_PUBLIC_*` variables (Next.js convention)
+- VSCode `launch.json` configured for Next.js debugging
+- But FRONTEND_STRATEGY_ANALYSIS.md recommends Vite
+
+**Recommendation: Choose Vite**
+- ✅ Faster dev server and build times
+- ✅ Simpler configuration for SPA
+- ✅ Better alignment with shadcn/ui
+- ✅ No SSR complexity (not needed for admin panel)
+- ⚠️ Will need to migrate `.env.local` from `NEXT_PUBLIC_*` to `VITE_*`
 
 ### Immediate Actions (This Week)
 
-1. **✅ YES - Conduct User Flow Analysis**
-   - Create user journey maps for 3 personas (admin, analyst, developer)
-   - Document 5 primary workflows with diagrams
-   - Create wireframes for key screens
-   - **Timeline:** 2-3 days
-   - **Owner:** UX/Product team or developer
+**Priority 1: Technology Stack Decision** (1 hour)
+- [ ] Confirm Vite vs Next.js choice with team
+- [ ] Document decision rationale
+- [ ] Update `.env.local` variable names if choosing Vite
 
-2. **✅ YES - Keep feature/frontend-development Branch**
-   - Continue using this branch as integration point
-   - Clean up non-frontend changes (move to develop)
-   - Create sub-feature branches for phases
-   - **Timeline:** 1 day
-   - **Owner:** Developer
+**Priority 2: Initialize Frontend Project** (1 day)
+- [ ] **Option A (Vite)**: Run `npm create vite@latest frontend -- --template react-ts`
+- [ ] **Option B (Next.js)**: Run `npx create-next-app@latest frontend --typescript`
+- [ ] Migrate existing utilities from `/frontend/src/lib/` to new structure
+- [ ] Update `.env.local` with correct variable prefixes
+- [ ] Verify dev server runs (`npm run dev`)
 
-3. **Initialize Frontend Project**
-   - Set up React + TypeScript + Vite
-   - Install shadcn/ui components
-   - Generate API client from OpenAPI spec
-   - **Timeline:** 1 day
-   - **Owner:** Developer
+**Priority 3: Install Core Dependencies** (2 hours)
+```bash
+cd frontend
+npm install @tanstack/react-query axios react-router-dom
+npm install lucide-react class-variance-authority clsx tailwind-merge
+npm install -D @types/node
+```
 
-4. **Design System Setup**
-   - Define color palette (brand colors)
-   - Typography scale
-   - Component variants
-   - **Timeline:** 1 day
-   - **Owner:** Designer or Developer
+**Priority 4: Set Up shadcn/ui** (2 hours)
+```bash
+npx shadcn@latest init
+npx shadcn@latest add button card input label table
+npx shadcn@latest add dialog dropdown-menu toast
+```
+
+**Priority 5: Generate TypeScript API Client** (3 hours)
+- [ ] Start FastAPI server: `cd /home/carlos/projects/data_foundry/data-foundry && uvicorn src.main:app`
+- [ ] Generate client using openapi-generator or orval:
+  ```bash
+  # Option A: openapi-generator
+  npx @openapitools/openapi-generator-cli generate \
+    -i http://localhost:8000/openapi.json \
+    -g typescript-axios \
+    -o src/services/api
+
+  # Option B: orval (recommended - better types)
+  npm install -D orval
+  # Create orval.config.ts
+  npx orval
+  ```
+- [ ] Test API client with a simple GET request
+
+**Priority 6: User Flow Analysis** (2-3 days)
+- [ ] Create user journey maps for 3 personas (admin, analyst, developer)
+- [ ] Document 5 primary workflows with flow diagrams
+- [ ] Create wireframes for key screens (Figma/Excalidraw)
+- [ ] Document in `/docs/planning/USER_FLOWS.md`
+
+**Priority 7: Authentication Setup** (1 day)
+- [ ] Decide: Clerk (already in .env.local) vs custom JWT implementation?
+- [ ] Implement auth context provider
+- [ ] Create login/logout components
+- [ ] Set up protected route wrapper
+- [ ] Test JWT token flow with FastAPI backend
 
 ### Short-term Actions (Next 2 Weeks)
 
@@ -692,9 +848,30 @@ develop (default branch)
 
 ---
 
-## 10. Conclusion
+## 10. Conclusion (UPDATED)
 
-### Summary of Recommendations
+### Summary of Exploration Findings
+
+**What We Confirmed ✅:**
+1. **Backend is production-ready** - 19 endpoints, 6 API modules, 99.2% tests passing
+2. **Frontend scaffolding exists** - 7 utility files, environment configured
+3. **Infrastructure is solid** - Docker Compose with 5 services, UV package management
+4. **Documentation is comprehensive** - OpenAPI spec, strategy docs, architecture guides
+
+**What We Discovered ⚠️:**
+1. **No package.json** - npm project not initialized despite existing utilities
+2. **Next.js vs Vite confusion** - Environment variables suggest Next.js, but strategy recommends Vite
+3. **No CI/CD** - Opportunity for GitHub Actions automation
+4. **Clerk auth configured** - Decision needed: use Clerk or custom JWT?
+
+**Critical Gaps ❌:**
+1. No React components or pages
+2. No build system (Vite/Next.js not configured)
+3. No TypeScript configuration
+4. No API client generation setup
+5. No frontend testing infrastructure
+
+### Updated Recommendations
 
 1. **✅ YES - User Flow Analysis is APPROPRIATE and CRITICAL**
    - Backend-first design needs validation with user workflows
@@ -707,25 +884,34 @@ develop (default branch)
    - Supports parallel development
    - **Recommendation:** Clean up non-frontend changes, use sub-feature branches
 
-3. **Recommended Tech Stack:**
-   - **Frontend:** React + TypeScript + Vite
+3. **🚨 CRITICAL DECISION: Vite vs Next.js**
+   - **Recommendation: Vite** (simpler, faster, no SSR overhead)
+   - Evidence of Next.js consideration (env variables, debug config)
+   - Need to migrate NEXT_PUBLIC_* → VITE_* if choosing Vite
+   - **Action Required:** Team decision within 1 day
+
+4. **🚨 CRITICAL DECISION: Clerk vs Custom JWT**
+   - Clerk credentials already in `.env.local`
+   - Backend has custom JWT in `src/core/security.py`
+   - **Recommendation:** Custom JWT (better integration, no external dependency)
+   - **Alternative:** Clerk (faster setup, managed auth)
+   - **Action Required:** Team decision within 1 day
+
+5. **Recommended Tech Stack (CONFIRMED):**
+   - **Frontend:** React + TypeScript + **Vite** (pending decision)
    - **UI:** shadcn/ui + Tailwind CSS
    - **Data:** TanStack Query + Axios
+   - **API Client:** orval (auto-generated from OpenAPI)
    - **Routing:** React Router
-   - **Testing:** Vitest + Playwright
+   - **Testing:** Vitest (unit) + Playwright (E2E)
+   - **Auth:** Custom JWT with FastAPI backend (pending decision)
 
-4. **Timeline Estimate:**
-   - **Phase 1 (Setup):** 3-5 days
-   - **Phase 2 (Components):** 5-7 days
-   - **Phase 3 (Features):** 7-10 days
-   - **Phase 4 (Polish):** 3-5 days
-   - **Total:** 3-4 weeks for MVP
-
-5. **Next Steps:**
-   - Start with user flow analysis (2-3 days)
-   - Initialize React project (1 day)
-   - Build admin dashboard as proof of concept (1 week)
-   - Iterate based on feedback
+6. **Updated Priorities (Week 1):**
+   - **Day 1**: Technology decisions (Vite vs Next.js, Auth strategy)
+   - **Day 2**: Initialize frontend project, install dependencies
+   - **Day 3**: Generate API client, set up authentication
+   - **Days 4-5**: User flow analysis and wireframing
+   - **Weekend**: Core layout components
 
 ### Final Assessment
 
@@ -733,17 +919,81 @@ develop (default branch)
 **Answer: ✅ YES - CRITICAL for successful frontend implementation**
 
 **Question 2: Is feature/frontend-development branch appropriate?**
-**Answer: ✅ YES - Complies with best practices, needs cleanup and sub-branching strategy**
+**Answer: ✅ YES - Complies with best practices, clean existing scaffolding before proceeding**
 
-**Question 3: Does it comply with best practices?**
-**Answer: ✅ YES - With recommended improvements:**
-- Regular merges from develop
-- Sub-feature branches for phases
-- Clear separation of frontend/backend concerns
-- Proper Git Flow workflow
+**Question 3: Does the existing frontend scaffolding help or hinder?**
+**Answer: ⚠️ MIXED - Utilities are helpful, but tech stack confusion needs resolution**
+- ✅ Keep: Utility functions (parsers, formatters, data-table)
+- ⚠️ Decide: Next.js vs Vite (conflicting signals)
+- ⚠️ Migrate: Environment variables to match chosen framework
+- ❌ Remove: VSCode Next.js debug config if choosing Vite
+
+**Question 4: What are the blocking issues?**
+**Answer: 🚨 Two critical decisions must be made before implementation:**
+1. Build tool: Vite (recommended) vs Next.js (partially configured)
+2. Authentication: Custom JWT (backend-integrated) vs Clerk (external service)
 
 ---
 
-**Document Status:** Draft for Review
-**Next Action:** Review with team, approve user flow analysis plan
-**Dependencies:** Backend APIs must remain stable during frontend development
+**Document Status:** ✅ Updated with Exploration Results + Technology Decisions
+**Last Updated:** December 23, 2025 (post-exploration + decisions finalized)
+**Next Action:** Initialize Next.js project with Clerk authentication
+**Dependencies:**
+- Backend APIs must remain stable during frontend development
+- ✅ Technology stack decisions FINALIZED (see TECHNOLOGY_DECISIONS.md)
+- User flow analysis can proceed in parallel
+
+---
+
+## 11. FINAL TECHNOLOGY STACK (DECIDED) ✅
+
+**Decisions finalized on December 23, 2025**
+**See `/docs/planning/TECHNOLOGY_DECISIONS.md` for full rationale**
+
+### Framework Decision: Next.js 14+ (App Router) ✅
+
+**Reasoning:**
+- Product is **commercial SaaS** (EaaS+LaaS), not internal tool
+- Needs SEO for customer acquisition (marketing pages, landing page, pricing)
+- SSR/SSG for performance and search engine indexing
+- Already partially configured (`.env.local`, VSCode debug config)
+- Future flexibility for blog, docs, changelog
+
+### Authentication Decision: Clerk ✅
+
+**Reasoning:**
+- Social login (Google, GitHub) required
+- MFA for enterprise customers
+- User management dashboard for customer support
+- Development speed priority (hours vs weeks)
+- Already configured in `.env.local`
+- Cost: Free up to 10k MAU, then $25/month for 1k MAU
+
+### Complete Stack:
+
+| Category | Technology |
+|----------|-----------|
+| Framework | Next.js 14+ (App Router) |
+| Language | TypeScript (strict mode) |
+| UI Components | shadcn/ui + Radix UI |
+| Styling | Tailwind CSS |
+| Authentication | Clerk |
+| API Client | Orval (OpenAPI → TypeScript + React Query) |
+| Data Fetching | TanStack Query |
+| Forms | React Hook Form + Zod |
+| Charts | Recharts / shadcn charts |
+| Testing | Vitest + Playwright |
+| Deployment | Vercel (recommended) or Docker |
+
+### Updated Week 1 Priorities:
+
+**Day 1 (TODAY):** ✅ Technology decisions finalized
+- [x] Next.js vs Vite → **Next.js** (SEO, SSR for SaaS)
+- [x] Clerk vs Custom JWT → **Clerk** (speed, social login, MFA)
+- [ ] Initialize Next.js project
+- [ ] Configure Clerk
+
+**Day 2:** Development environment setup
+**Day 3:** Authentication integration + API client generation
+**Day 4-5:** User flow analysis + wireframes
+**Weekend:** Core layout components
