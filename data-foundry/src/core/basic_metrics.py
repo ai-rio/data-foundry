@@ -23,7 +23,7 @@ import threading
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Any
+from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +107,7 @@ class BasicMetricsCollector:
         """Initialize metrics collector with empty state"""
         self.predictions: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
         self.ground_truth: Dict[str, bool] = {}
-        self._treatments: Set[str] = set()
+        self._treatments: List[str] = []  # Changed from Set to List for Pydantic compatibility
         self._lock = threading.RLock()  # RLock for re-entrant read-write consistency
         logger.info("BasicMetricsCollector initialized")
 
@@ -123,7 +123,8 @@ class BasicMetricsCollector:
                 # Silently ignore duplicate treatments (idempotent operation)
                 return
             self.predictions[treatment] = []
-            self._treatments.add(treatment)
+            if treatment not in self._treatments:  # Changed from set add to list append
+                self._treatments.append(treatment)
 
     def record_prediction(
         self,

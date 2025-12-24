@@ -61,7 +61,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(
     prefix="/abtest",
     tags=ABTEST_API_TAGS,
-    responses={404: {"model": ErrorResponse, "description": "Not found"}},
 )
 
 

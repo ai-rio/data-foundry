@@ -381,16 +381,10 @@ class TreatmentMetricsResponse(BaseModel):
 
 class ABTestMetricsResponse(BaseModel):
     """Response model for full A/B test metrics."""
-    test_id: str = Field(..., description="Test identifier")
-    test_name: str = Field(..., description="Test name")
-    treatments: Dict[str, TreatmentMetricsResponse] = Field(
-        ...,
-        description="Metrics per treatment"
-    )
-    comparison: Optional[Dict[str, Any]] = Field(
-        None,
-        description="Comparison metrics between treatments"
-    )
+    test_id: str
+    test_name: str
+    treatments: Dict[str, TreatmentMetricsResponse]
+    comparison: Optional[Dict[str, Any]] = None
 
     class Config:
         json_schema_extra = {
@@ -432,11 +426,11 @@ class ABTestMetricsResponse(BaseModel):
 
 class ExportMetricsResponse(BaseModel):
     """Response model for exporting metrics as JSON."""
-    test_id: str = Field(..., description="Test identifier")
-    test_name: str = Field(..., description="Test name")
-    description: Optional[str] = Field(None, description="Test description")
-    metrics: Dict[str, Any] = Field(..., description="Full metrics data")
-    exported_at: datetime = Field(default_factory=datetime.utcnow, description="Export timestamp")
+    test_id: str
+    test_name: str
+    description: Optional[str] = None
+    metrics: Dict[str, Any]
+    exported_at: datetime = Field(default_factory=datetime.utcnow)
 
     class Config:
         json_schema_extra = {
@@ -445,8 +439,21 @@ class ExportMetricsResponse(BaseModel):
                 "test_name": "test-validation-strategies",
                 "description": "Testing strict vs lenient validation",
                 "metrics": {
-                    "distribution": {...},
-                    "treatments": {...}
+                    "distribution": {
+                        "total_samples": 200,
+                        "control_samples": 140,
+                        "variant_samples": 60
+                    },
+                    "treatments": {
+                        "control": {
+                            "treatment": "control",
+                            "total_samples": 140
+                        },
+                        "variant": {
+                            "treatment": "variant",
+                            "total_samples": 60
+                        }
+                    }
                 },
                 "exported_at": "2025-01-15T10:30:00Z"
             }
