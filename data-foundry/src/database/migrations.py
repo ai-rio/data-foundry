@@ -10,6 +10,13 @@ from sqlalchemy import text
 from src.core.config import settings
 from src.database.connection import db_connection
 
+# Import all models to ensure they're registered with SQLModel.metadata
+from src.models.data_record import DataRecord
+from src.models.processed_data import ProcessedData
+from src.models.human_review_queue import HumanReviewQueue
+from src.models.user import User, UserRole, UserStatus
+from src.models.tenant import Tenant, TenantStatus
+
 
 async def create_tables():
     """Create all database tables."""
@@ -70,7 +77,9 @@ async def create_rls_policies():
         ]
 
         for table in tables:
+            # Force RLS to apply even to table owner
             await conn.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
+            await conn.execute(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY")
 
         # Create policy for data_records with proper PostgreSQL syntax
         await conn.execute("""

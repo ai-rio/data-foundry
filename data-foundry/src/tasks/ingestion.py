@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # PII Redaction Support - Track Presidio availability
 PRESIDIO_AVAILABLE: bool = False
 try:
-    from presidio_analyzer import AnalyzerEngine
+    from presidio_analyzer import AnalyzerEngine, PatternRecognizer
     from presidio_anonymizer import AnonymizerEngine
     PRESIDIO_AVAILABLE = True
 except ImportError:
@@ -35,6 +35,47 @@ except ImportError:
     logger.warning(
         "Presidio not installed - PII redaction will be skipped. "
         "Install with: pip install presidio-analyzer presidio-anonymizer"
+    )
+
+
+def _get_ssn_recognizer() -> PatternRecognizer | None:
+    r"""
+    Create a custom SSN recognizer for hyphenated format: XXX-XX-XXXX.
+
+    WHY:
+    - Presidio's default US_SSN recognizer may not detect hyphenated SSNs
+    - The format '123-45-6789' is a common SSN representation
+    - Custom pattern ensures consistent detection
+
+    HOW:
+    - Uses regex pattern \d{3}-\d{2}-\d{4}
+    - Assigns high confidence (0.9) for exact pattern matches
+    - Returns None if Presidio is not available
+
+    Returns:
+        PatternRecognizer configured for SSN detection, or None
+    """
+    if not PRESIDIO_AVAILABLE:
+        return None
+
+    from presidio_analyzer import Pattern
+
+    # SSN pattern: XXX-XX-XXXX (exactly 3 digits, hyphen, 2 digits, hyphen, 4 digits)
+    ssn_patterns = [
+        Pattern(
+            name="SSN_HYPHENATED_PATTERN",
+            regex=r"\b\d{3}-\d{2}-\d{4}\b",
+            score=0.9,
+        )
+    ]
+
+    # Create the recognizer
+    # Note: Not using a deny list for test values - in production,
+    # you may want to add common example SSNs to avoid false positives
+    return PatternRecognizer(
+        supported_entity="US_SSN",
+        patterns=ssn_patterns,
+        context=["ssn", "social", "security", "tax", "id"],
     )
 
 
@@ -605,6 +646,26 @@ def apply_pii_redaction(data: list[dict[str, Any]]) -> list[dict[str, Any]]:
     SECURITY: If Presidio is not installed and PII redaction is enabled,
     this function will log a clear warning but continue processing.
     In production, ensure Presidio is installed if ENABLE_PII_REDACTION is True.
+
+    WHY:
+    - Redacts PII including SSN, phone, email, and names
+    - Uses custom SSN recognizer for hyphenated format (XXX-XX-XXXX)
+    - Returns metadata about what was redacted
+
+    HOW:
+    - Registers custom SSN pattern recognizer with Presidio analyzer
+    - Processes text fields: name, email, phone, ssn, notes
+    - Replaces detected PII with entity type placeholders (e.g., <US_SSN>)
+
+    Args:
+        data: List of records to redact
+
+    Returns:
+        List of records with PII redacted and metadata added
+
+    Example:
+        >>> redacted = apply_pii_redaction([{"ssn": "123-45-6789", ...}])
+        >>> redacted[0]["ssn"]  # Returns: "<US_SSN>"
     """
     logger = get_run_logger()
 
@@ -622,19 +683,26 @@ def apply_pii_redaction(data: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     logger.info("Applying PII redaction with Presidio")
 
+    # Initialize analyzer with custom SSN recognizer
     analyzer = AnalyzerEngine()
+    ssn_recognizer = _get_ssn_recognizer()
+    if ssn_recognizer:
+        analyzer.registry.add_recognizer(ssn_recognizer)
+        logger.info("Custom SSN recognizer registered for hyphenated format (XXX-XX-XXXX)")
+
     anonymizer = AnonymizerEngine()
 
     redacted_data = []
     for record in data:
         # Analyze and anonymize PII
-        text_fields = ["name", "email", "phone"]
+        # Include 'ssn' and 'notes' fields in addition to standard fields
+        text_fields = ["name", "email", "phone", "ssn", "notes"]
         redacted_record = record.copy()
 
         for field in text_fields:
             if field in record:
                 try:
-                    # Analyze the text
+                    # Analyze the text for PII
                     results = analyzer.analyze(text=str(record[field]), language="en")
 
                     # Anonymize if PII detected

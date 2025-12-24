@@ -192,8 +192,10 @@ class DatabaseConnection:
         """Get a tenant-aware database connection."""
         async with self.get_connection() as connection:
             # Set tenant context using RLS
+            # NOTE: SET LOCAL does not support parameterized queries, must use escaped literal
+            escaped_tenant_id = tenant_id.replace("'", "''")
             await connection.execute(
-                "SET LOCAL app.tenant_id = $1", tenant_id
+                f"SET LOCAL app.tenant_id = '{escaped_tenant_id}'"
             )
             yield connection
 
@@ -381,8 +383,9 @@ async def get_tenant_db(tenant_id: str) -> AsyncGenerator[AsyncSession, None]:
 
     async with db_connection.get_session() as session:
         # Set tenant context using PostgreSQL's SET LOCAL for RLS
+        # NOTE: SET LOCAL does not support parameterized queries, must use escaped literal
+        escaped_tenant_id = tenant_id.replace("'", "''")
         await session.execute(
-            text("SET LOCAL app.tenant_id = :tenant_id"),
-            {"tenant_id": tenant_id}
+            text(f"SET LOCAL app.tenant_id = '{escaped_tenant_id}'")
         )
         yield session
