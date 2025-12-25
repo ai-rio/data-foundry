@@ -3093,3 +3093,594 @@ class TestStripeServiceBatchEventTypeValidation:
         error_msg = str(exc_info.value).lower()
         assert "index 0" in error_msg
         assert "index 1" in error_msg
+
+
+# ============================================================================
+# P02-003: Retry Logic with Exponential Backoff
+# ============================================================================
+
+class TestStripeServiceRetryLogic:
+    """
+    P02-003: Retry Logic with Exponential Backoff for Stripe API Calls
+
+    TDD Cycle:
+    - RED: Write tests for retry behavior (these FAIL until implemented)
+    - GREEN: Implement retry logic to pass tests
+    - REFACTOR: Improve code quality, logging, and maintainability
+
+    Task: P02-003 - Retry logic with exponential backoff for Stripe API calls
+    Target Quality Gates:
+    - Security: >= 95%
+    - Coverage: >= 90%
+    """
+
+    # ==================== RED PHASE: Retry Configuration Tests ====================
+
+    @pytest.mark.asyncio
+    async def test_retry_configuration_has_default_values(self):
+        """
+        RED PHASE: Test that retry configuration has correct default values.
+
+        This test FAILS until retry configuration is implemented.
+        Verifies default values:
+        - MAX_RETRIES = 5
+        - INITIAL_RETRY_DELAY_MS = 1000
+        - MAX_RETRY_DELAY_MS = 32000
+        - RETRY_BACKOFF_MULTIPLIER = 2.0
+        """
+        from src.services.stripe_service import StripeService
+
+        # Given: A StripeService instance
+        service = StripeService()
+
+        # When: Checking retry configuration
+        # Then: Should have default values
+        assert hasattr(service, 'MAX_RETRIES'), "Service should have MAX_RETRIES attribute"
+        assert hasattr(service, 'INITIAL_RETRY_DELAY_MS'), "Service should have INITIAL_RETRY_DELAY_MS"
+        assert hasattr(service, 'MAX_RETRY_DELAY_MS'), "Service should have MAX_RETRY_DELAY_MS"
+        assert hasattr(service, 'RETRY_BACKOFF_MULTIPLIER'), "Service should have RETRY_BACKOFF_MULTIPLIER"
+
+        assert service.MAX_RETRIES == 5, f"MAX_RETRIES should be 5, got {service.MAX_RETRIES}"
+        assert service.INITIAL_RETRY_DELAY_MS == 1000, f"INITIAL_RETRY_DELAY_MS should be 1000, got {service.INITIAL_RETRY_DELAY_MS}"
+        assert service.MAX_RETRY_DELAY_MS == 32000, f"MAX_RETRY_DELAY_MS should be 32000, got {service.MAX_RETRY_DELAY_MS}"
+        assert service.RETRY_BACKOFF_MULTIPLIER == 2.0, f"RETRY_BACKOFF_MULTIPLIER should be 2.0, got {service.RETRY_BACKOFF_MULTIPLIER}"
+
+    @pytest.mark.asyncio
+    @patch.dict('os.environ', {
+        'STRIPE_MAX_RETRIES': '10',
+        'STRIPE_INITIAL_RETRY_DELAY_MS': '500',
+        'STRIPE_MAX_RETRY_DELAY_MS': '60000'
+    })
+    async def test_retry_configuration_from_environment_variables(self):
+        """
+        RED PHASE: Test that retry configuration can be set via environment variables.
+
+        This test FAILS until environment variable support is implemented.
+        Verifies:
+        - STRIPE_MAX_RETRIES
+        - STRIPE_INITIAL_RETRY_DELAY_MS
+        - STRIPE_MAX_RETRY_DELAY_MS
+        """
+        from src.services.stripe_service import StripeService
+
+        # Given: Environment variables set
+        # When: Creating StripeService instance
+        service = StripeService()
+
+        # Then: Should use environment variable values
+        assert service.MAX_RETRIES == 10, f"MAX_RETRIES should be 10 from env, got {service.MAX_RETRIES}"
+        assert service.INITIAL_RETRY_DELAY_MS == 500, f"INITIAL_RETRY_DELAY_MS should be 500 from env, got {service.INITIAL_RETRY_DELAY_MS}"
+        assert service.MAX_RETRY_DELAY_MS == 60000, f"MAX_RETRY_DELAY_MS should be 60000 from env, got {service.MAX_RETRY_DELAY_MS}"
+
+    # ==================== RED PHASE: Exponential Backoff Tests ====================
+
+    @pytest.mark.asyncio
+    async def test_exponential_backoff_calculation(self):
+        """
+        RED PHASE: Test exponential backoff delay calculation.
+
+        This test FAILS until backoff calculation is implemented.
+        Verifies delays: 1s, 2s, 4s, 8s, 16s, 32s (with max cap at 32s)
+        Formula: delay = min(initial * (multiplier ^ attempt), max_delay)
+        """
+        from src.services.stripe_service import StripeService
+
+        # Given: A StripeService instance with default config
+        service = StripeService()
+        service.MAX_RETRIES = 5
+        service.INITIAL_RETRY_DELAY_MS = 1000
+        service.RETRY_BACKOFF_MULTIPLIER = 2.0
+        service.MAX_RETRY_DELAY_MS = 32000
+
+        # When: Calculating backoff delays for each retry attempt
+        delays = []
+        for attempt in range(service.MAX_RETRIES):
+            delay = service._calculate_backoff_delay(attempt)
+            delays.append(delay)
+
+        # Then: Should follow exponential backoff: 1s, 2s, 4s, 8s, 16s
+        # Without jitter, delays should be exact
+        assert delays[0] == 1000, f"First retry delay should be 1000ms, got {delays[0]}"
+        assert delays[1] == 2000, f"Second retry delay should be 2000ms, got {delays[1]}"
+        assert delays[2] == 4000, f"Third retry delay should be 4000ms, got {delays[2]}"
+        assert delays[3] == 8000, f"Fourth retry delay should be 8000ms, got {delays[3]}"
+        assert delays[4] == 16000, f"Fifth retry delay should be 16000ms, got {delays[4]}"
+
+    @pytest.mark.asyncio
+    async def test_exponential_backoff_with_max_delay_cap(self):
+        """
+        RED PHASE: Test that exponential backoff respects max delay cap.
+
+        This test FAILS until max delay capping is implemented.
+        Even with more attempts, delay should not exceed MAX_RETRY_DELAY_MS.
+        """
+        from src.services.stripe_service import StripeService
+
+        # Given: A StripeService instance with low max delay
+        service = StripeService()
+        service.MAX_RETRIES = 10
+        service.INITIAL_RETRY_DELAY_MS = 1000
+        service.RETRY_BACKOFF_MULTIPLIER = 2.0
+        service.MAX_RETRY_DELAY_MS = 5000  # Low cap for testing
+
+        # When: Calculating backoff delays for many retry attempts
+        delays = []
+        for attempt in range(service.MAX_RETRIES):
+            delay = service._calculate_backoff_delay(attempt)
+            delays.append(delay)
+
+        # Then: No delay should exceed max delay
+        for delay in delays:
+            assert delay <= service.MAX_RETRY_DELAY_MS, \
+                f"Delay {delay}ms exceeds max {service.MAX_RETRY_DELAY_MS}ms"
+
+        # And: Delays should eventually hit the cap
+        assert service.MAX_RETRY_DELAY_MS in delays, \
+            "Should have delays that hit the max delay cap"
+
+    # ==================== RED PHASE: Jitter Tests ====================
+
+    @pytest.mark.asyncio
+    async def test_jitter_added_to_backoff_delay(self):
+        """
+        RED PHASE: Test that jitter is added to backoff delay.
+
+        This test FAILS until jitter is implemented.
+        Jitter should be ±25% of the base delay to prevent thundering herd.
+        """
+        from src.services.stripe_service import StripeService
+        import random
+
+        # Given: A StripeService instance
+        service = StripeService()
+        service.INITIAL_RETRY_DELAY_MS = 1000
+        service.RETRY_BACKOFF_MULTIPLIER = 2.0
+
+        # Set random seed for reproducibility
+        random.seed(42)
+
+        # When: Calculating backoff delays with jitter
+        base_delay = 2000  # 1s * 2^1
+        delays_with_jitter = []
+        for _ in range(100):  # Sample multiple times
+            delay = service._calculate_backoff_delay_with_jitter(1)
+            delays_with_jitter.append(delay)
+
+        # Then: All delays should be within ±25% of base delay
+        min_jitter = base_delay * 0.75  # 1500ms
+        max_jitter = base_delay * 1.25  # 2500ms
+
+        for delay in delays_with_jitter:
+            assert min_jitter <= delay <= max_jitter, \
+                f"Jittered delay {delay}ms is outside range [{min_jitter}, {max_jitter}]"
+
+        # And: Delays should vary (not all the same)
+        assert len(set(delays_with_jitter)) > 1, "Jitter should produce varying delays"
+
+    # ==================== RED PHASE: Retry on Transient Errors ====================
+
+    @pytest.mark.asyncio
+    @patch('src.services.stripe_service.SecretManager')
+    async def test_retry_on_rate_limit_429(self, MockSecretManager):
+        """
+        RED PHASE: Test that retry logic retries on HTTP 429 (rate limit).
+
+        This test FAILS until retry logic is implemented.
+        Should retry with backoff when Stripe returns 429.
+        """
+        from src.services.stripe_service import StripeService
+        import stripe
+
+        # Given: A StripeService instance and mocked SecretManager
+        mock_instance = Mock()
+        mock_instance.get_secret.return_value = "sk_test_1234567890"
+        MockSecretManager.return_value = mock_instance
+
+        service = StripeService()
+        await service.initialize()
+
+        # Create a mock stripe error for rate limiting
+        rate_limit_error = stripe.error.RateLimitError(
+            message="Rate limit exceeded",
+            http_status=429,
+            json_body={'error': {'message': 'Rate limit exceeded'}}
+        )
+
+        call_count = {'count': 0}
+
+        async def mock_api_call(*args, **kwargs):
+            """Mock API that fails first time, succeeds second."""
+            call_count['count'] += 1
+            if call_count['count'] == 1:
+                raise rate_limit_error
+            return {'id': 'evt_test_success'}
+
+        # Mock asyncio.sleep to avoid actual delays
+        with patch('asyncio.sleep') as mock_sleep:
+            # When: Calling API with retry logic
+            result = await service._retry_with_backoff(
+                func=mock_api_call,
+                operation_name="test_operation"
+            )
+
+        # Then: Should have retried and succeeded
+        assert call_count['count'] == 2, f"Should have called API twice, got {call_count['count']}"
+        assert result['id'] == 'evt_test_success', "Should return successful result"
+        assert mock_sleep.called, "Should have slept between retries"
+
+    @pytest.mark.asyncio
+    @patch('src.services.stripe_service.SecretManager')
+    async def test_retry_on_server_errors_500_502_503_504(self, MockSecretManager):
+        """
+        RED PHASE: Test that retry logic retries on server errors.
+
+        This test FAILS until retry logic is implemented.
+        Should retry on: 500, 502, 503, 504
+        """
+        from src.services.stripe_service import StripeService
+        import stripe
+
+        # Test each server error code
+        error_codes = [500, 502, 503, 504]
+
+        for error_code in error_codes:
+            # Mock SecretManager
+            mock_instance = Mock()
+            mock_instance.get_secret.return_value = "sk_test_1234567890"
+            MockSecretManager.return_value = mock_instance
+
+            service = StripeService()
+            await service.initialize()
+
+            # Create a mock stripe error for server error
+            server_error = stripe.error.APIError(
+                message=f"Server error: {error_code}",
+                http_status=error_code,
+                json_body={'error': {'message': f'Server error: {error_code}'}}
+            )
+
+            call_count = {'count': 0}
+
+            async def mock_api_call(*args, **kwargs):
+                """Mock API that fails first time, succeeds second."""
+                call_count['count'] += 1
+                if call_count['count'] == 1:
+                    raise server_error
+                return {'id': 'evt_test_success'}
+
+            # Mock asyncio.sleep
+            with patch('asyncio.sleep'):
+                # When: Calling API with retry logic
+                result = await service._retry_with_backoff(
+                    func=mock_api_call,
+                    operation_name=f"test_operation_{error_code}"
+                )
+
+            # Then: Should have retried and succeeded
+            assert call_count['count'] == 2, f"Should retry on {error_code}"
+            assert result['id'] == 'evt_test_success'
+
+    @pytest.mark.asyncio
+    @patch('src.services.stripe_service.SecretManager')
+    async def test_no_retry_on_client_errors_400_401_404(self, MockSecretManager):
+        """
+        RED PHASE: Test that retry logic does NOT retry on client errors.
+
+        This test FAILS until retry logic is implemented.
+        Should NOT retry on: 400, 401, 404 (client errors are not transient)
+        """
+        from src.services.stripe_service import StripeService
+        import stripe
+
+        # Test each client error code
+        error_codes = [400, 401, 404]
+
+        for error_code in error_codes:
+            # Mock SecretManager
+            mock_instance = Mock()
+            mock_instance.get_secret.return_value = "sk_test_1234567890"
+            MockSecretManager.return_value = mock_instance
+
+            service = StripeService()
+            await service.initialize()
+
+            # Create a mock stripe error for client error
+            if error_code == 400:
+                client_error = stripe.error.InvalidRequestError(
+                    message="Bad request",
+                    param=None,
+                    http_status=error_code,
+                    json_body={'error': {'message': 'Bad request'}}
+                )
+            elif error_code == 401:
+                client_error = stripe.error.AuthenticationError(
+                    message="Unauthorized",
+                    http_status=error_code,
+                    json_body={'error': {'message': 'Unauthorized'}}
+                )
+            else:  # 404
+                client_error = stripe.error.InvalidRequestError(
+                    message="Not found",
+                    param=None,
+                    http_status=error_code,
+                    json_body={'error': {'message': 'Not found'}}
+                )
+
+            call_count = {'count': 0}
+
+            async def mock_api_call(*args, **kwargs):
+                """Mock API that fails with client error."""
+                call_count['count'] += 1
+                raise client_error
+
+            # Mock asyncio.sleep
+            with patch('asyncio.sleep'):
+                # When/Then: Calling API with retry logic should raise without retrying
+                with pytest.raises(stripe.error.StripeError):
+                    await service._retry_with_backoff(
+                        func=mock_api_call,
+                        operation_name=f"test_operation_{error_code}"
+                    )
+
+            # Then: Should NOT have retried (only called once)
+            assert call_count['count'] == 1, f"Should NOT retry on client error {error_code}"
+
+    # ==================== RED PHASE: Max Retry Limit ====================
+
+    @pytest.mark.asyncio
+    @patch('src.services.stripe_service.SecretManager')
+    async def test_max_retry_limit_enforcement(self, MockSecretManager):
+        """
+        RED PHASE: Test that retry logic respects max retry limit.
+
+        This test FAILS until max retry enforcement is implemented.
+        Should raise final exception after MAX_RETRIES attempts.
+        """
+        from src.services.stripe_service import StripeService
+        import stripe
+
+        # Given: A StripeService instance with low max retries
+        # Mock SecretManager
+        mock_instance = Mock()
+        mock_instance.get_secret.return_value = "sk_test_1234567890"
+        MockSecretManager.return_value = mock_instance
+
+        service = StripeService()
+        service.MAX_RETRIES = 3
+        await service.initialize()
+
+        # Create a mock stripe error for rate limiting
+        rate_limit_error = stripe.error.RateLimitError(
+            message="Rate limit exceeded",
+            http_status=429,
+            json_body={'error': {'message': 'Rate limit exceeded'}}
+        )
+
+        call_count = {'count': 0}
+
+        async def mock_api_call(*args, **kwargs):
+            """Mock API that always fails."""
+            call_count['count'] += 1
+            raise rate_limit_error
+
+        # Mock asyncio.sleep
+        with patch('asyncio.sleep'):
+            # When/Then: Should raise after max retries
+            with pytest.raises(stripe.error.RateLimitError):
+                await service._retry_with_backoff(
+                    func=mock_api_call,
+                    operation_name="test_operation"
+                )
+
+        # Then: Should have attempted exactly MAX_RETRIES + 1 (initial + retries)
+        # Or exactly MAX_RETRIES depending on implementation
+        # Most retry implementations try initial + MAX_RETRIES
+        assert call_count['count'] == service.MAX_RETRIES + 1, \
+            f"Should attempt {service.MAX_RETRIES + 1} times (initial + {service.MAX_RETRIES} retries), got {call_count['count']}"
+
+    # ==================== RED PHASE: Successful Retry ====================
+
+    @pytest.mark.asyncio
+    @patch('src.services.stripe_service.SecretManager')
+    async def test_successful_retry_after_transient_failure(self, MockSecretManager):
+        """
+        RED PHASE: Test successful retry after transient failure.
+
+        This test FAILS until retry logic is implemented.
+        Simulates real-world scenario: API fails with 429, succeeds on retry.
+        """
+        from src.services.stripe_service import StripeService
+        import stripe
+
+        # Given: A StripeService instance
+        # Mock SecretManager
+        mock_instance = Mock()
+        mock_instance.get_secret.return_value = "sk_test_1234567890"
+        MockSecretManager.return_value = mock_instance
+
+        service = StripeService()
+        service.MAX_RETRIES = 5
+        await service.initialize()
+
+        # Create a mock stripe error for rate limiting
+        rate_limit_error = stripe.error.RateLimitError(
+            message="Rate limit exceeded",
+            http_status=429,
+            json_body={'error': {'message': 'Rate limit exceeded'}}
+        )
+
+        call_count = {'count': 0}
+
+        async def mock_api_call(*args, **kwargs):
+            """Mock API that fails twice, then succeeds."""
+            call_count['count'] += 1
+            if call_count['count'] <= 2:
+                raise rate_limit_error
+            return {'id': 'evt_test_success', 'status': 'succeeded'}
+
+        # Mock asyncio.sleep to avoid delays and capture sleep calls
+        sleep_calls = []
+
+        mock_sleep = AsyncMock()
+        mock_sleep.side_effect = lambda seconds: sleep_calls.append(seconds)
+
+        with patch('asyncio.sleep', new=mock_sleep):
+            # When: Calling API with retry logic
+            result = await service._retry_with_backoff(
+                func=mock_api_call,
+                operation_name="test_meter_event_report"
+            )
+
+        # Then: Should have succeeded after retries
+        assert call_count['count'] == 3, f"Should have called API 3 times (2 failures + 1 success), got {call_count['count']}"
+        assert result['id'] == 'evt_test_success', "Should return successful result"
+        assert result['status'] == 'succeeded', "Should have succeeded status"
+        assert len(sleep_calls) == 2, f"Should have slept 2 times (between retries), got {len(sleep_calls)}"
+
+        # Verify exponential backoff (delays should increase)
+        if len(sleep_calls) >= 2:
+            # Convert to milliseconds for comparison (sleep is in seconds)
+            delays_ms = [s * 1000 for s in sleep_calls]
+            # Each delay should be roughly double the previous (with jitter)
+            # Allow for jitter variation (±30%)
+            expected_second_delay_min = delays_ms[0] * 2 * 0.70
+            expected_second_delay_max = delays_ms[0] * 2 * 1.30
+            assert expected_second_delay_min <= delays_ms[1] <= expected_second_delay_max, \
+                f"Second delay should be ~2x first delay (with jitter): {delays_ms}"
+
+    # ==================== RED PHASE: Integration with report_usage ====================
+
+    @pytest.mark.asyncio
+    @patch('src.services.stripe_service.SecretManager')
+    @patch.dict('os.environ', {'STRIPE_AI_LABELS_METER_ID': 'mtr_test_ai_labels'})
+    async def test_report_usage_retries_on_rate_limit(self, MockSecretManager):
+        """
+        RED PHASE: Test that report_usage() uses retry logic.
+
+        This test FAILS until retry logic is integrated into report_usage.
+        Verifies that report_usage() retries on transient failures.
+        """
+        from src.services.stripe_service import StripeService
+        import stripe
+
+        # Given: A StripeService instance
+        service = StripeService()
+        await service.initialize()
+
+        # Create a mock stripe error for rate limiting
+        rate_limit_error = stripe.error.RateLimitError(
+            message="Rate limit exceeded",
+            http_status=429,
+            json_body={'error': {'message': 'Rate limit exceeded'}}
+        )
+
+        call_count = {'count': 0}
+
+        original_report = service._report_meter_event_to_stripe
+
+        def mock_report_with_retry(*args, **kwargs):
+            """Mock that fails first time, succeeds second."""
+            call_count['count'] += 1
+            if call_count['count'] == 1:
+                raise rate_limit_error
+            return {
+                'id': 'evt_test_success',
+                'event_name': 'ai_labels',
+                'status': 'succeeded'
+            }
+
+        # Patch the internal method
+        service._report_meter_event_to_stripe = mock_report_with_retry
+
+        # Mock asyncio.sleep
+        with patch('asyncio.sleep'):
+            # When: Reporting usage with retry logic
+            result = await service.report_usage(
+                meter_event='ai_labels',
+                value=100,
+                tenant_id='tenant_123'
+            )
+
+        # Then: Should have retried and succeeded
+        assert call_count['count'] == 2, f"Should have retried once, got {call_count['count']} calls"
+        assert result['status'] == 'succeeded', "Should succeed after retry"
+
+    # ==================== RED PHASE: Idempotency Preservation ====================
+
+    @pytest.mark.asyncio
+    @patch('src.services.stripe_service.SecretManager')
+    @patch.dict('os.environ', {'STRIPE_AI_LABELS_METER_ID': 'mtr_test_ai_labels'})
+    async def test_retry_preserves_idempotency(self, MockSecretManager):
+        """
+        RED PHASE: Test that retry logic preserves idempotency.
+
+        This test FAILS until retry logic properly handles idempotency.
+        Retries should be safe due to idempotency keys preventing duplicate billing.
+        """
+        from src.services.stripe_service import StripeService
+        import stripe
+
+        # Given: A StripeService instance
+        # Mock SecretManager
+        mock_instance = Mock()
+        mock_instance.get_secret.return_value = "sk_test_1234567890"
+        MockSecretManager.return_value = mock_instance
+
+        service = StripeService()
+        await service.initialize()
+
+        idempotency_keys_used = []
+
+        original_report = service._report_meter_event_to_stripe
+
+        def mock_report_capture_idempotency(meter_id, event_name, value, idempotency_key, **kwargs):
+            """Mock that captures idempotency keys and fails first time."""
+            idempotency_keys_used.append(idempotency_key)
+            if len(idempotency_keys_used) == 1:
+                raise stripe.error.RateLimitError(
+                    message="Rate limit exceeded",
+                    http_status=429,
+                    json_body={'error': {'message': 'Rate limit exceeded'}}
+                )
+            return {
+                'id': 'evt_test_success',
+                'event_name': event_name,
+                'status': 'succeeded'
+            }
+
+        # Patch the internal method
+        service._report_meter_event_to_stripe = mock_report_capture_idempotency
+
+        # Mock asyncio.sleep
+        with patch('asyncio.sleep'):
+            # When: Reporting usage with retry logic
+            result = await service.report_usage(
+                meter_event='ai_labels',
+                value=100,
+                tenant_id='tenant_123'
+            )
+
+        # Then: Should have used the same idempotency key for all retries
+        assert len(idempotency_keys_used) == 2, f"Should have made 2 attempts, got {len(idempotency_keys_used)}"
+        assert len(set(idempotency_keys_used)) == 1, "Should use same idempotency key for all retries (safe from duplicate billing)"
+        assert result['status'] == 'succeeded', "Should succeed after retry"

@@ -24,9 +24,11 @@ Meter Types:
 - METER_HUMAN_AUDITS: Human review workflow usage
 """
 
+import asyncio
 import logging
 import os
-from typing import Dict, Optional, Any, List
+import time
+from typing import Dict, Optional, Any, List, Callable
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
 import uuid
@@ -234,10 +236,23 @@ class StripeService:
         Initialize StripeService.
 
         The service must be initialized by calling initialize() before use.
+
+        P02-003: Retry configuration with exponential backoff for transient failures.
+        Retry settings can be customized via environment variables:
+        - STRIPE_MAX_RETRIES: Maximum number of retry attempts (default: 5)
+        - STRIPE_INITIAL_RETRY_DELAY_MS: Initial retry delay in milliseconds (default: 1000)
+        - STRIPE_MAX_RETRY_DELAY_MS: Maximum retry delay in milliseconds (default: 32000)
         """
         self.api_key: Optional[str] = None
         self.secret_manager: Optional[SecretManager] = None
         self._initialized: bool = False
+
+        # P02-003: Retry configuration with exponential backoff
+        # Load from environment variables or use defaults
+        self.MAX_RETRIES = int(os.getenv("STRIPE_MAX_RETRIES", "5"))
+        self.INITIAL_RETRY_DELAY_MS = int(os.getenv("STRIPE_INITIAL_RETRY_DELAY_MS", "1000"))
+        self.MAX_RETRY_DELAY_MS = int(os.getenv("STRIPE_MAX_RETRY_DELAY_MS", "32000"))
+        self.RETRY_BACKOFF_MULTIPLIER = 2.0  # Fixed exponential backoff multiplier
 
         # Meter configuration - maps meter event names to meter IDs from environment
         # These are configured in .env:
@@ -691,10 +706,11 @@ class StripeService:
                 f"for tenant {tenant_id} (meter_id: {meter_id})"
             )
 
-            # Stripe v2 API call for meter events
-            # The exact API call depends on Stripe SDK version
-            # Using stripe.Billing.MeterEventStream pattern for v2 API
-            stripe_response = self._report_meter_event_to_stripe(
+            # P02-003: Wrap API call with retry logic for transient failures
+            # The retry logic preserves idempotency - same key for all attempts
+            stripe_response = await self._retry_with_backoff(
+                func=self._report_meter_event_to_stripe,
+                operation_name=f"report_meter_event_{meter_event}",
                 meter_id=meter_id,
                 event_name=meter_event,
                 value=value,
@@ -870,16 +886,19 @@ class StripeService:
         batch_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Report meter event to Stripe v2 billing API.
+        Report meter event to Stripe v2 billing API with retry logic.
 
-        This is the actual Stripe API call. Separated for easier testing
-        and future retry logic implementation.
+        P02-003: This method now includes automatic retry with exponential backoff
+        for transient failures (rate limits, network issues, server errors).
+
+        The retry logic preserves idempotency - the same idempotency_key is used
+        for all retry attempts, preventing duplicate billing.
 
         Args:
             meter_id: The Stripe meter ID (mtr_*)
             event_name: The event name
             value: The event value/quantity
-            idempotency_key: Unique idempotency key
+            idempotency_key: Unique idempotency key (same for all retries)
             customer_id: Optional Stripe customer ID
             metadata: Optional sanitized metadata
             batch_id: Optional batch identifier (internal use)
@@ -888,53 +907,57 @@ class StripeService:
             Stripe API response as dictionary
 
         Raises:
-            stripe.error.StripeError: If API call fails
+            stripe.error.StripeError: If API call fails after all retries
         """
-        # Prepare payload for Stripe v2 billing meter event stream
-        # Note: The exact API structure may vary based on Stripe SDK version
-        # This follows the v2/billing/meter_event_stream pattern
+        # Prepare the actual API call function (will be retried)
+        def _make_stripe_api_call():
+            """Internal method that makes the actual Stripe API call."""
+            # Prepare payload for Stripe v2 billing meter event stream
+            payload = {
+                "value": str(value),  # Stripe expects string value
+            }
 
-        # Build event payload
-        payload = {
-            "value": str(value),  # Stripe expects string value
-        }
+            if customer_id:
+                payload["stripe_customer_id"] = customer_id
 
-        if customer_id:
-            payload["stripe_customer_id"] = customer_id
+            if batch_id:
+                payload["batch_id"] = batch_id
 
-        if batch_id:
-            payload["batch_id"] = batch_id
+            if metadata:
+                payload.update(metadata)
 
-        if metadata:
-            payload.update(metadata)
+            # Create meter event
+            # Using stripe.Billing.MeterEvent.create pattern for v2 API
+            # Reference: https://stripe.com/docs/api/billing/meter_events/create
+            # Note: This requires stripe >= 7.0.0 for v2 API support
+            try:
+                # Try v2 API with Billing.MeterEvent.create
+                event = stripe.Billing.MeterEvent.create(
+                    event_name=event_name,
+                    payload=payload,
+                    idempotency_key=idempotency_key,
+                )
+                return dict(event)
+            except AttributeError:
+                # Fallback for older SDK versions
+                # Use stripe.APIRequestor for raw HTTP request
+                import stripe.api_requestor
+                requestor = stripe.api_requestor.APIRequestor()
+                response, _ = requestor.request(
+                    method="post",
+                    url="/v2/billing/meter_event_stream",
+                    params={
+                        "event_name": event_name,
+                        "payload": payload,
+                        "idempotency_key": idempotency_key,
+                    }
+                )
+                return response.data
 
-        # Create meter event
-        # Using stripe.Billing.MeterEvent.create pattern for v2 API
-        # Reference: https://stripe.com/docs/api/billing/meter_events/create
-        # Note: This requires stripe >= 7.0.0 for v2 API support
-        try:
-            # Try v2 API with Billing.MeterEvent.create
-            event = stripe.Billing.MeterEvent.create(
-                event_name=event_name,
-                payload=payload,
-                idempotency_key=idempotency_key,
-            )
-            return dict(event)
-        except AttributeError:
-            # Fallback for older SDK versions
-            # Use stripe.APIRequestor for raw HTTP request
-            import stripe.api_requestor
-            requestor = stripe.api_requestor.APIRequestor()
-            response, _ = requestor.request(
-                method="post",
-                url="/v2/billing/meter_event_stream",
-                params={
-                    "event_name": event_name,
-                    "payload": payload,
-                    "idempotency_key": idempotency_key,
-                }
-            )
-            return response.data
+        # P02-003: Wrap the API call with retry logic
+        # Note: We need to await this in an async context
+        # For now, we'll make it synchronous and wrap the call site
+        return _make_stripe_api_call()
 
     def _stripe_customer_to_dict(self, stripe_customer) -> Dict[str, Any]:
         """
@@ -1170,3 +1193,202 @@ class StripeService:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
         unique_suffix = uuid.uuid4().hex[:8]
         return f"batch_{tenant_id}_{timestamp}_{unique_suffix}"
+
+    # ========================================================================
+    # P02-003: Retry Logic with Exponential Backoff
+    # ========================================================================
+
+    def _calculate_backoff_delay(self, attempt: int) -> int:
+        """
+        Calculate exponential backoff delay for retry attempt.
+
+        Implements exponential backoff: delay = initial * (multiplier ^ attempt)
+        Delays are capped at MAX_RETRY_DELAY_MS to prevent excessive wait times.
+
+        Args:
+            attempt: Retry attempt number (0-indexed)
+
+        Returns:
+            Delay in milliseconds
+
+        Example:
+            >>> service = StripeService()
+            >>> service._calculate_backoff_delay(0)  # First retry
+            1000
+            >>> service._calculate_backoff_delay(1)  # Second retry
+            2000
+            >>> service._calculate_backoff_delay(2)  # Third retry
+            4000
+        """
+        import math
+
+        # Calculate exponential backoff
+        delay_ms = self.INITIAL_RETRY_DELAY_MS * (self.RETRY_BACKOFF_MULTIPLIER ** attempt)
+
+        # Cap at max delay
+        return int(min(delay_ms, self.MAX_RETRY_DELAY_MS))
+
+    def _calculate_backoff_delay_with_jitter(self, attempt: int) -> int:
+        """
+        Calculate backoff delay with random jitter to prevent thundering herd.
+
+        Adds ±25% jitter to the base delay to distribute retry attempts
+        across time and prevent synchronized retry storms.
+
+        Args:
+            attempt: Retry attempt number (0-indexed)
+
+        Returns:
+            Delay in milliseconds with jitter applied
+
+        Example:
+            >>> service = StripeService()
+            >>> # Will return value between 750ms and 1250ms for attempt 0
+            >>> delay = service._calculate_backoff_delay_with_jitter(0)
+        """
+        import random
+
+        base_delay = self._calculate_backoff_delay(attempt)
+
+        # Add jitter: ±25% of base delay
+        jitter_range = base_delay * 0.25
+        jittered_delay = base_delay + random.uniform(-jitter_range, jitter_range)
+
+        return int(jittered_delay)
+
+    def _is_transient_error(self, error: Exception) -> bool:
+        """
+        Determine if an error is transient (should retry) or permanent (should not retry).
+
+        Transient errors (retry):
+        - HTTP 429: Rate limit errors
+        - HTTP 500: Internal server errors
+        - HTTP 502: Bad gateway
+        - HTTP 503: Service unavailable
+        - HTTP 504: Gateway timeout
+
+        Permanent errors (no retry):
+        - HTTP 400: Bad request
+        - HTTP 401: Unauthorized
+        - HTTP 404: Not found
+
+        Args:
+            error: Exception to check
+
+        Returns:
+            True if error is transient (should retry), False otherwise
+        """
+        # Check if it's a Stripe error with HTTP status code
+        if hasattr(error, 'http_status'):
+            status_code = error.http_status
+
+            # Retry on rate limits and server errors
+            if status_code in [429, 500, 502, 503, 504]:
+                return True
+
+            # Don't retry on client errors
+            if status_code in [400, 401, 404]:
+                return False
+
+        # Check specific Stripe error types
+        if isinstance(error, stripe.error.RateLimitError):
+            return True
+        if isinstance(error, stripe.error.APIError):
+            # APIError can be transient or permanent
+            # Check HTTP status if available
+            if hasattr(error, 'http_status'):
+                return error.http_status in [429, 500, 502, 503, 504]
+            # Assume APIError is transient if no status code
+            return True
+        if isinstance(error, (stripe.error.InvalidRequestError,
+                              stripe.error.AuthenticationError,
+                              stripe.error.PermissionError)):
+            # Client errors - don't retry
+            return False
+
+        # Default: don't retry on unknown errors
+        return False
+
+    async def _retry_with_backoff(
+        self,
+        func: Callable[..., Any],
+        operation_name: str,
+        *args,
+        **kwargs
+    ) -> Any:
+        """
+        Execute function with retry logic and exponential backoff.
+
+        Wraps Stripe API calls with automatic retry on transient failures.
+        Implements exponential backoff with jitter to prevent thundering herd.
+
+        Args:
+            func: Async function to execute (will be retried on transient errors)
+            operation_name: Human-readable operation name for logging
+            *args: Positional arguments to pass to func
+            **kwargs: Keyword arguments to pass to func
+
+        Returns:
+            Result from func on success
+
+        Raises:
+            Exception: The last exception encountered after all retries exhausted
+
+        Example:
+            >>> result = await service._retry_with_backoff(
+            ...     func=stripe.Customer.create,
+            ...     operation_name="create_customer",
+            ...     email="test@example.com"
+            ... )
+        """
+        last_exception = None
+
+        for attempt in range(self.MAX_RETRIES + 1):  # +1 for initial attempt
+            try:
+                # Attempt the operation
+                if asyncio.iscoroutinefunction(func):
+                    result = await func(*args, **kwargs)
+                else:
+                    result = func(*args, **kwargs)
+
+                # Success - return result
+                if attempt > 0:
+                    logger.info(
+                        f"{operation_name} succeeded after {attempt} retries"
+                    )
+                return result
+
+            except Exception as e:
+                last_exception = e
+
+                # Check if error is transient (should retry)
+                if not self._is_transient_error(e):
+                    # Permanent error - don't retry
+                    logger.error(
+                        f"{operation_name} failed with permanent error: {e}"
+                    )
+                    raise
+
+                # Transient error - check if we should retry
+                if attempt < self.MAX_RETRIES:
+                    # Calculate backoff delay with jitter
+                    delay_ms = self._calculate_backoff_delay_with_jitter(attempt)
+                    delay_sec = delay_ms / 1000.0
+
+                    logger.warning(
+                        f"{operation_name} failed (attempt {attempt + 1}/{self.MAX_RETRIES + 1}): {e}. "
+                        f"Retrying in {delay_ms:.0f}ms..."
+                    )
+
+                    # Sleep before retry (async to avoid blocking event loop)
+                    await asyncio.sleep(delay_sec)
+                else:
+                    # Max retries exhausted
+                    logger.error(
+                        f"{operation_name} failed after {self.MAX_RETRIES} retries: {e}"
+                    )
+                    raise
+
+        # Should not reach here, but just in case
+        if last_exception:
+            raise last_exception
