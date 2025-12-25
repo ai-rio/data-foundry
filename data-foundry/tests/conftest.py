@@ -5,6 +5,7 @@ Pytest configuration and fixtures for Data Foundry tests
 import asyncio
 import json
 import os
+import sys
 import pytest
 import tempfile
 import time
@@ -13,6 +14,40 @@ from datetime import datetime
 from decimal import Decimal
 from typing import AsyncGenerator, Generator
 from unittest.mock import Mock, AsyncMock, patch
+
+# CRITICAL: Mock problematic modules BEFORE importing src.main
+# This prevents import errors when modules are not available
+sys.modules['structlog'] = Mock()
+sys.modules['jose'] = Mock()
+sys.modules['jose.jwt'] = Mock()
+sys.modules['asyncpg'] = Mock()  # PostgreSQL async driver
+sys.modules['redis'] = Mock()  # Redis client
+
+# Mock presidio modules (optional PII redaction)
+mock_presidio_analyzer = Mock()
+mock_presidio_analyzer.AnalyzerEngine = Mock
+mock_presidio_analyzer.PatternRecognizer = Mock
+sys.modules['presidio_analyzer'] = mock_presidio_analyzer
+
+mock_presidio_anonymizer = Mock()
+mock_presidio_anonymizer.AnonymizerEngine = Mock
+sys.modules['presidio_anonymizer'] = mock_presidio_anonymizer
+
+# Mock dlt module structure
+mock_dlt = Mock()
+mock_dlt.pipeline = Mock()
+mock_dlt.destinations = Mock()
+mock_dlt.destinations.postgres = Mock()
+sys.modules['dlt'] = mock_dlt
+sys.modules['dlt.pipeline'] = mock_dlt.pipeline
+sys.modules['dlt.destinations'] = mock_dlt.destinations
+
+# Mock prefect module structure
+mock_prefect = Mock()
+mock_prefect.flow = Mock()
+mock_prefect.get_run_logger = Mock()
+mock_prefect.task = Mock()
+sys.modules['prefect'] = mock_prefect
 
 import pytest_asyncio
 from fastapi.testclient import TestClient
