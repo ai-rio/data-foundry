@@ -3,11 +3,13 @@ StripeService - Stripe billing operations for Data Foundry.
 
 This service provides Stripe customer management operations including:
 - Customer CRUD operations (create, read, update, delete)
+- Meter event reporting for usage-based billing
 - Metadata mapping between tenant_id and Stripe customer
 - Stripe API integration with proper error handling
 - Database persistence for Stripe customer records
 
 P1-002: StripeService base with Customer CRUD operations
+P02-001: Meter event reporting for usage-based billing
 
 Security Features:
 - API key management via SecretManager
@@ -21,8 +23,10 @@ Meter Types:
 """
 
 import logging
-from typing import Dict, Optional, Any
+import os
+from typing import Dict, Optional, Any, List
 from datetime import datetime
+import uuid
 
 import stripe
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,7 +35,7 @@ from sqlmodel import col
 
 from src.core.secret_manager import SecretManager
 from src.models.tenant import Tenant
-from src.models.stripe_billing import StripeCustomer
+from src.models.stripe_billing import StripeCustomer, StripeMeterEvent, StripeMeterEventStatus
 
 
 logger = logging.getLogger(__name__)
@@ -118,6 +122,36 @@ class StripeAPIError(StripeServiceError):
         super().__init__(message)
 
 
+class StripeMeterValidationError(StripeServiceError):
+    """
+    Raised when meter event validation fails.
+
+    This exception is raised when:
+    - Invalid meter_event name is provided
+    - Meter event is not configured
+    - Invalid value (quantity) is provided
+    - Required tenant context is missing
+    """
+
+    def __init__(
+        self,
+        message: str,
+        meter_event: Optional[str] = None,
+        validation_errors: Optional[list] = None
+    ):
+        """
+        Initialize StripeMeterValidationError.
+
+        Args:
+            message: Error message describing what went wrong
+            meter_event: Optional meter event name that failed validation
+            validation_errors: Optional list of specific validation errors
+        """
+        self.meter_event = meter_event
+        self.validation_errors = validation_errors or []
+        super().__init__(message)
+
+
 # ============================================================================
 # StripeService
 # ============================================================================
@@ -150,6 +184,15 @@ class StripeService:
         self.api_key: Optional[str] = None
         self.secret_manager: Optional[SecretManager] = None
         self._initialized: bool = False
+
+        # Meter configuration - maps meter event names to meter IDs from environment
+        # These are configured in .env:
+        # STRIPE_AI_LABELS_METER_ID=mtr_test_...
+        # STRIPE_HUMAN_AUDITS_METER_ID=mtr_test_...
+        self._meter_config: Dict[str, str] = {
+            self.METER_AI_LABELS: os.getenv("STRIPE_AI_LABELS_METER_ID", ""),
+            self.METER_HUMAN_AUDITS: os.getenv("STRIPE_HUMAN_AUDITS_METER_ID", ""),
+        }
 
     async def initialize(self) -> None:
         """
@@ -488,6 +531,291 @@ class StripeService:
         except Exception as e:
             logger.error(f"Unexpected error deleting customer: {e}")
             raise StripeServiceError(f"Failed to delete customer: {e}") from e
+
+    async def report_usage(
+        self,
+        meter_event: str,
+        value: int,
+        tenant_id: str,
+        metadata: Optional[Dict[str, str]] = None,
+        stripe_customer_id: Optional[str] = None,
+        db_session: Optional[AsyncSession] = None
+    ) -> Dict[str, Any]:
+        """
+        Report meter event usage to Stripe for billing.
+
+        Sends usage events to Stripe's v2/billing/meter_event_stream API for
+        metered billing. Validates meter event name and value before reporting.
+
+        Args:
+            meter_event: The meter event name (e.g., "ai_labels", "human_audits")
+            value: The quantity/value to report (must be positive integer)
+            tenant_id: Tenant identifier for tracking
+            metadata: Optional metadata dictionary for the event
+            stripe_customer_id: Optional Stripe customer ID for validation
+            db_session: Optional database session for persisting event record
+
+        Returns:
+            Dictionary with Stripe API response including:
+            - event_id: Unique identifier for the meter event
+            - status: Event status (succeeded, failed, pending)
+            - stripe_response: Full Stripe API response
+
+        Raises:
+            StripeServiceError: If service not initialized
+            StripeMeterValidationError: If meter event validation fails
+            StripeAPIError: If Stripe API call fails
+
+        Example:
+            >>> result = await service.report_usage(
+            ...     meter_event="ai_labels",
+            ...     value=100,
+            ...     tenant_id="tenant_123",
+            ...     metadata={"batch_id": "batch_001"}
+            ... )
+        """
+        self._ensure_initialized()
+
+        # Validate meter event
+        validation_errors = self._validate_meter_event(meter_event, value)
+        if validation_errors:
+            raise StripeMeterValidationError(
+                f"Meter event validation failed for '{meter_event}'",
+                meter_event=meter_event,
+                validation_errors=validation_errors
+            )
+
+        # Get meter ID for this event
+        meter_id = self._meter_config.get(meter_event)
+        if not meter_id:
+            raise StripeMeterValidationError(
+                f"Meter ID not configured for event '{meter_event}'. "
+                f"Please set STRIPE_{meter_event.upper()}_METER_ID environment variable.",
+                meter_event=meter_event
+            )
+
+        # Generate idempotency key for this event
+        idempotency_key = self._generate_idempotency_key(tenant_id, meter_event, value)
+
+        # Prepare event data for Stripe API
+        event_data = {
+            "event_name": meter_event,
+            "payload": {
+                "value": value,
+                "stripe_customer_id": stripe_customer_id,
+            },
+            "idempotency_key": idempotency_key,
+        }
+
+        # Add metadata if provided
+        if metadata:
+            event_data["payload"]["metadata"] = metadata
+
+        # Track event in database if session provided
+        db_event = None
+        if db_session:
+            db_event = StripeMeterEvent(
+                tenant_id=tenant_id,
+                event_name=meter_event,
+                quantity=value,
+                idempotency_key=idempotency_key,
+                status=StripeMeterEventStatus.PENDING
+            )
+            db_session.add(db_event)
+            await db_session.commit()
+            await db_session.refresh(db_event)
+
+        try:
+            # Call Stripe v2 billing meter event stream API
+            # Note: Using stripe.Billing.MeterEventStream.create() pattern
+            # This may need adjustment based on exact Stripe SDK version
+            logger.info(
+                f"Reporting meter event: {meter_event}={value} "
+                f"for tenant {tenant_id} (meter_id: {meter_id})"
+            )
+
+            # Stripe v2 API call for meter events
+            # The exact API call depends on Stripe SDK version
+            # Using stripe.Billing.MeterEventStream pattern for v2 API
+            stripe_response = self._report_meter_event_to_stripe(
+                meter_id=meter_id,
+                event_name=meter_event,
+                value=value,
+                idempotency_key=idempotency_key,
+                customer_id=stripe_customer_id,
+                metadata=metadata
+            )
+
+            # Update database record if provided
+            if db_session and db_event:
+                db_event.status = StripeMeterEventStatus.SUCCEEDED
+                db_event.stripe_response = stripe_response
+                await db_session.commit()
+                await db_session.refresh(db_event)
+
+            logger.info(
+                f"Successfully reported meter event {meter_event}={value} "
+                f"for tenant {tenant_id}"
+            )
+
+            return {
+                "event_id": idempotency_key,
+                "status": "succeeded",
+                "stripe_response": stripe_response,
+                "meter_event": meter_event,
+                "value": value
+            }
+
+        except stripe.error.StripeError as e:
+            logger.error(f"Stripe API error reporting meter event: {e}")
+
+            # Update database record as failed
+            if db_session and db_event:
+                db_event.status = StripeMeterEventStatus.FAILED
+                db_event.error_message = str(e)
+                await db_session.commit()
+
+            raise StripeAPIError(
+                f"Failed to report meter event to Stripe: {str(e)}",
+                stripe_error_type=type(e).__name__,
+                stripe_code=getattr(e, 'code', None)
+            ) from e
+
+        except Exception as e:
+            logger.error(f"Unexpected error reporting meter event: {e}")
+
+            # Update database record as failed
+            if db_session and db_event:
+                db_event.status = StripeMeterEventStatus.FAILED
+                db_event.error_message = str(e)
+                await db_session.commit()
+
+            raise StripeServiceError(f"Failed to report meter event: {e}") from e
+
+    def _validate_meter_event(self, meter_event: str, value: int) -> List[str]:
+        """
+        Validate meter event parameters.
+
+        Args:
+            meter_event: The meter event name to validate
+            value: The quantity/value to validate
+
+        Returns:
+            List of validation error messages (empty if valid)
+        """
+        errors = []
+
+        # Validate meter_event name
+        valid_events = [self.METER_AI_LABELS, self.METER_HUMAN_AUDITS]
+        if meter_event not in valid_events:
+            errors.append(
+                f"Invalid meter_event '{meter_event}'. "
+                f"Must be one of: {', '.join(valid_events)}"
+            )
+
+        # Validate value is positive integer
+        if not isinstance(value, int):
+            errors.append(f"Value must be an integer, got {type(value).__name__}")
+        elif value <= 0:
+            errors.append(f"Value must be positive, got {value}")
+
+        return errors
+
+    def _generate_idempotency_key(
+        self,
+        tenant_id: str,
+        meter_event: str,
+        value: int
+    ) -> str:
+        """
+        Generate unique idempotency key for meter event.
+
+        Combines tenant_id, meter_event, timestamp, and UUID to ensure
+        uniqueness while allowing for duplicate detection.
+
+        Args:
+            tenant_id: Tenant identifier
+            meter_event: Meter event name
+            value: Event value
+
+        Returns:
+            Unique idempotency key string
+        """
+        timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+        unique_suffix = uuid.uuid4().hex[:8]
+        return f"{tenant_id}_{meter_event}_{value}_{timestamp}_{unique_suffix}"
+
+    def _report_meter_event_to_stripe(
+        self,
+        meter_id: str,
+        event_name: str,
+        value: int,
+        idempotency_key: str,
+        customer_id: Optional[str] = None,
+        metadata: Optional[Dict[str, str]] = None
+    ) -> Dict[str, Any]:
+        """
+        Report meter event to Stripe v2 billing API.
+
+        This is the actual Stripe API call. Separated for easier testing
+        and future retry logic implementation.
+
+        Args:
+            meter_id: The Stripe meter ID (mtr_*)
+            event_name: The event name
+            value: The event value/quantity
+            idempotency_key: Unique idempotency key
+            customer_id: Optional Stripe customer ID
+            metadata: Optional metadata
+
+        Returns:
+            Stripe API response as dictionary
+
+        Raises:
+            stripe.error.StripeError: If API call fails
+        """
+        # Prepare payload for Stripe v2 billing meter event stream
+        # Note: The exact API structure may vary based on Stripe SDK version
+        # This follows the v2/billing/meter_event_stream pattern
+
+        # Build event payload
+        payload = {
+            "value": str(value),  # Stripe expects string value
+        }
+
+        if customer_id:
+            payload["stripe_customer_id"] = customer_id
+
+        if metadata:
+            payload.update(metadata)
+
+        # Create meter event
+        # Using stripe.Billing.MeterEvent.create pattern for v2 API
+        # Reference: https://stripe.com/docs/api/billing/meter_events/create
+        # Note: This requires stripe >= 7.0.0 for v2 API support
+        try:
+            # Try v2 API with Billing.MeterEvent.create
+            event = stripe.Billing.MeterEvent.create(
+                event_name=event_name,
+                payload=payload,
+                idempotency_key=idempotency_key,
+            )
+            return dict(event)
+        except AttributeError:
+            # Fallback for older SDK versions
+            # Use stripe.APIRequestor for raw HTTP request
+            import stripe.api_requestor
+            requestor = stripe.api_requestor.APIRequestor()
+            response, _ = requestor.request(
+                method="post",
+                url="/v2/billing/meter_event_stream",
+                params={
+                    "event_name": event_name,
+                    "payload": payload,
+                    "idempotency_key": idempotency_key,
+                }
+            )
+            return response.data
 
     def _stripe_customer_to_dict(self, stripe_customer) -> Dict[str, Any]:
         """

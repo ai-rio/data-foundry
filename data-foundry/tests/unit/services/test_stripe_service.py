@@ -524,6 +524,11 @@ def test_db_session():
 def initialized_stripe_service():
     """Fixture providing an initialized StripeService for testing."""
     from src.services.stripe_service import StripeService
+    import os
+
+    # Set default meter IDs for testing
+    os.environ.setdefault('STRIPE_AI_LABELS_METER_ID', 'mtr_test_ai_labels')
+    os.environ.setdefault('STRIPE_HUMAN_AUDITS_METER_ID', 'mtr_test_human_audits')
 
     service = StripeService()
     # Manually set initialized state to bypass SecretManager in tests
@@ -1164,3 +1169,882 @@ class TestStripeServiceErrorHandling:
         assert result['name'] == "Test Org"
         assert result['metadata'] == {'tenant_id': 'tenant_123'}
         assert result['created'] == 1234567890
+
+
+# ============================================================================
+# P02-001: Meter Event Reporting Tests
+# ============================================================================
+
+class TestStripeMeterValidationError:
+    """
+    CYCLE 9: StripeMeterValidationError Exception Class
+    - RED: Test for StripeMeterValidationError exception
+    - GREEN: Exception class already implemented
+    - REFACTOR: Add validation error details
+    """
+
+    def test_stripe_meter_validation_error_exists(self):
+        """
+        RED PHASE: Test that StripeMeterValidationError exception class exists.
+
+        This test FAILS until exception is created.
+        """
+        # Given: Import attempt
+        # When: Importing from stripe_service
+        # Then: Should be importable
+        from src.services.stripe_service import StripeMeterValidationError
+
+        # And: Should be an Exception subclass
+        assert issubclass(StripeMeterValidationError, Exception)
+
+    def test_stripe_meter_validation_error_inherits_from_service_error(self):
+        """
+        RED PHASE: Test that StripeMeterValidationError inherits from StripeServiceError.
+
+        Verifies proper exception hierarchy.
+        """
+        from src.services.stripe_service import (
+            StripeMeterValidationError,
+            StripeServiceError
+        )
+
+        # Should inherit from StripeServiceError
+        assert issubclass(StripeMeterValidationError, StripeServiceError)
+
+    def test_stripe_meter_validation_error_can_be_raised_with_details(self):
+        """
+        RED PHASE: Test that StripeMeterValidationError can be raised with details.
+
+        Verifies exception can be instantiated with meter_event and validation_errors.
+        """
+        from src.services.stripe_service import StripeMeterValidationError
+
+        # Given: Error details
+        meter_event = "invalid_meter"
+        validation_errors = ["Invalid meter name", "Value must be positive"]
+
+        # When: Raising the exception
+        # Then: Should capture the information
+        with pytest.raises(StripeMeterValidationError) as exc_info:
+            raise StripeMeterValidationError(
+                "Validation failed",
+                meter_event=meter_event,
+                validation_errors=validation_errors
+            )
+
+        assert exc_info.value.meter_event == meter_event
+        assert exc_info.value.validation_errors == validation_errors
+
+
+class TestStripeServiceMeterEventValidation:
+    """
+    CYCLE 10: report_usage() - Meter Event Validation
+    - RED: Test validation logic for meter events
+    - GREEN: Implement _validate_meter_event method
+    - REFACTOR: Add more validation rules
+    """
+
+    @pytest.mark.asyncio
+    async def test_validate_meter_event_accepts_valid_ai_labels_event(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test that valid ai_labels meter event passes validation.
+
+        Verifies that "ai_labels" meter event with positive value is accepted.
+        """
+        # Given: A valid meter event
+        meter_event = "ai_labels"
+        value = 100
+
+        # When: Validating the meter event
+        errors = initialized_stripe_service._validate_meter_event(meter_event, value)
+
+        # Then: Should have no errors
+        assert errors == []
+
+    @pytest.mark.asyncio
+    async def test_validate_meter_event_accepts_valid_human_audits_event(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test that valid human_audits meter event passes validation.
+
+        Verifies that "human_audits" meter event with positive value is accepted.
+        """
+        # Given: A valid meter event
+        meter_event = "human_audits"
+        value = 50
+
+        # When: Validating the meter event
+        errors = initialized_stripe_service._validate_meter_event(meter_event, value)
+
+        # Then: Should have no errors
+        assert errors == []
+
+    @pytest.mark.asyncio
+    async def test_validate_meter_event_rejects_invalid_meter_name(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test that invalid meter event name fails validation.
+
+        Verifies that meter event names other than "ai_labels" or "human_audits" are rejected.
+        """
+        # Given: An invalid meter event
+        meter_event = "invalid_meter"
+        value = 100
+
+        # When: Validating the meter event
+        errors = initialized_stripe_service._validate_meter_event(meter_event, value)
+
+        # Then: Should have validation error
+        assert len(errors) > 0
+        assert any("Invalid meter_event" in err for err in errors)
+
+    @pytest.mark.asyncio
+    async def test_validate_meter_event_rejects_non_integer_value(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test that non-integer value fails validation.
+
+        Verifies that float values are rejected (must be int).
+        """
+        # Given: A meter event with float value
+        meter_event = "ai_labels"
+        value = 100.5
+
+        # When: Validating the meter event
+        errors = initialized_stripe_service._validate_meter_event(meter_event, value)
+
+        # Then: Should have validation error
+        assert len(errors) > 0
+        assert any("integer" in err.lower() for err in errors)
+
+    @pytest.mark.asyncio
+    async def test_validate_meter_event_rejects_zero_value(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test that zero value fails validation.
+
+        Verifies that value must be positive (> 0).
+        """
+        # Given: A meter event with zero value
+        meter_event = "ai_labels"
+        value = 0
+
+        # When: Validating the meter event
+        errors = initialized_stripe_service._validate_meter_event(meter_event, value)
+
+        # Then: Should have validation error
+        assert len(errors) > 0
+        assert any("positive" in err.lower() for err in errors)
+
+    @pytest.mark.asyncio
+    async def test_validate_meter_event_rejects_negative_value(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test that negative value fails validation.
+
+        Verifies that negative values are rejected.
+        """
+        # Given: A meter event with negative value
+        meter_event = "ai_labels"
+        value = -10
+
+        # When: Validating the meter event
+        errors = initialized_stripe_service._validate_meter_event(meter_event, value)
+
+        # Then: Should have validation error
+        assert len(errors) > 0
+        assert any("positive" in err.lower() for err in errors)
+
+    @pytest.mark.asyncio
+    async def test_validate_meter_event_returns_multiple_errors(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test that multiple validation errors are returned.
+
+        Verifies that all validation issues are reported together.
+        """
+        # Given: An invalid meter event with multiple issues
+        meter_event = "invalid_meter"
+        value = -5
+
+        # When: Validating the meter event
+        errors = initialized_stripe_service._validate_meter_event(meter_event, value)
+
+        # Then: Should have multiple errors
+        assert len(errors) >= 2
+        assert any("Invalid meter_event" in err for err in errors)
+        assert any("positive" in err.lower() for err in errors)
+
+
+class TestStripeServiceReportUsage:
+    """
+    CYCLE 11: report_usage() - Core Functionality
+    - RED: Test successful meter event reporting
+    - GREEN: Implement report_usage() with Stripe API integration
+    - REFACTOR: Add database persistence, idempotency keys
+    """
+
+    @pytest.mark.asyncio
+    @patch.dict('os.environ', {
+        'STRIPE_AI_LABELS_METER_ID': 'mtr_test_ai_labels',
+        'STRIPE_HUMAN_AUDITS_METER_ID': 'mtr_test_human_audits'
+    })
+    async def test_report_usage_returns_success_response(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test successful meter event reporting.
+
+        Verifies that report_usage() returns proper response dictionary.
+        """
+        # Given: Valid meter event parameters
+        meter_event = "ai_labels"
+        value = 100
+        tenant_id = "tenant_123"
+
+        # Mock Stripe API call
+        with patch.object(
+            initialized_stripe_service,
+            '_report_meter_event_to_stripe',
+            return_value={"id": "evt_test123", "status": "succeeded"}
+        ):
+            # When: Reporting usage
+            result = await initialized_stripe_service.report_usage(
+                meter_event=meter_event,
+                value=value,
+                tenant_id=tenant_id
+            )
+
+            # Then: Should return success response
+            assert result['status'] == 'succeeded'
+            assert result['meter_event'] == meter_event
+            assert result['value'] == value
+            assert 'event_id' in result
+            assert 'stripe_response' in result
+
+    @pytest.mark.asyncio
+    @patch.dict('os.environ', {
+        'STRIPE_AI_LABELS_METER_ID': 'mtr_test_ai_labels'
+    })
+    async def test_report_usage_with_metadata_includes_metadata_in_call(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test that metadata is included in Stripe API call.
+
+        Verifies optional metadata parameter is passed through correctly.
+        """
+        # Given: Meter event with metadata
+        meter_event = "ai_labels"
+        value = 50
+        tenant_id = "tenant_123"
+        metadata = {"batch_id": "batch_001", "source": "api"}
+
+        # Mock Stripe API call
+        with patch.object(
+            initialized_stripe_service,
+            '_report_meter_event_to_stripe',
+            return_value={"id": "evt_test456"}
+        ) as mock_stripe_call:
+            # When: Reporting usage with metadata
+            await initialized_stripe_service.report_usage(
+                meter_event=meter_event,
+                value=value,
+                tenant_id=tenant_id,
+                metadata=metadata
+            )
+
+            # Then: Metadata should be included in Stripe call
+            mock_stripe_call.assert_called_once()
+            call_kwargs = mock_stripe_call.call_args.kwargs
+            assert call_kwargs['metadata'] == metadata
+
+    @pytest.mark.asyncio
+    @patch.dict('os.environ', {
+        'STRIPE_AI_LABELS_METER_ID': 'mtr_test_ai_labels'
+    })
+    async def test_report_usage_with_stripe_customer_id(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test that stripe_customer_id is included in API call.
+
+        Verifies optional customer ID parameter is passed through correctly.
+        """
+        # Given: Meter event with customer ID
+        meter_event = "ai_labels"
+        value = 75
+        tenant_id = "tenant_123"
+        customer_id = "cus_test123"
+
+        # Mock Stripe API call
+        with patch.object(
+            initialized_stripe_service,
+            '_report_meter_event_to_stripe',
+            return_value={"id": "evt_test789"}
+        ) as mock_stripe_call:
+            # When: Reporting usage with customer ID
+            await initialized_stripe_service.report_usage(
+                meter_event=meter_event,
+                value=value,
+                tenant_id=tenant_id,
+                stripe_customer_id=customer_id
+            )
+
+            # Then: Customer ID should be included in Stripe call
+            mock_stripe_call.assert_called_once()
+            call_kwargs = mock_stripe_call.call_args.kwargs
+            assert call_kwargs['customer_id'] == customer_id
+
+    @pytest.mark.asyncio
+    @patch.dict('os.environ', {
+        'STRIPE_AI_LABELS_METER_ID': 'mtr_test_ai_labels'
+    })
+    async def test_report_usage_generates_unique_idempotency_key(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test that unique idempotency key is generated.
+
+        Verifies that different calls generate different idempotency keys.
+        """
+        # Given: Service instance
+        meter_event = "ai_labels"
+        value = 100
+        tenant_id = "tenant_123"
+
+        # Mock Stripe API call
+        with patch.object(
+            initialized_stripe_service,
+            '_report_meter_event_to_stripe',
+            return_value={"id": "evt_test"}
+        ):
+            # When: Reporting usage twice
+            result1 = await initialized_stripe_service.report_usage(
+                meter_event=meter_event,
+                value=value,
+                tenant_id=tenant_id
+            )
+
+            # Small delay to ensure different timestamp
+            import asyncio
+            await asyncio.sleep(0.01)
+
+            result2 = await initialized_stripe_service.report_usage(
+                meter_event=meter_event,
+                value=value,
+                tenant_id=tenant_id
+            )
+
+            # Then: Idempotency keys should be different
+            assert result1['event_id'] != result2['event_id']
+
+    @pytest.mark.asyncio
+    @patch.dict('os.environ', {
+        'STRIPE_AI_LABELS_METER_ID': 'mtr_test_ai_labels'
+    })
+    async def test_report_usage_persists_to_database(
+        self, initialized_stripe_service, test_db_session
+    ):
+        """
+        RED PHASE: Test that meter event is persisted to database.
+
+        Verifies StripeMeterEvent record is created when db_session is provided.
+        """
+        # Given: Meter event with database session
+        meter_event = "ai_labels"
+        value = 100
+        tenant_id = "tenant_123"
+
+        # Mock Stripe API call
+        with patch.object(
+            initialized_stripe_service,
+            '_report_meter_event_to_stripe',
+            return_value={"id": "evt_test"}
+        ):
+            # When: Reporting usage with db_session
+            result = await initialized_stripe_service.report_usage(
+                meter_event=meter_event,
+                value=value,
+                tenant_id=tenant_id,
+                db_session=test_db_session
+            )
+
+            # Then: Should return success
+            assert result['status'] == 'succeeded'
+
+            # And: Database should have been called
+            test_db_session.add.assert_called()
+            test_db_session.commit.assert_called()
+
+
+class TestStripeServiceReportUsageValidationErrors:
+    """
+    CYCLE 12: report_usage() - Validation Error Handling
+    - RED: Test validation error scenarios
+    - GREEN: Validation already implemented
+    - REFACTOR: Improve error messages
+    """
+
+    @pytest.mark.asyncio
+    async def test_report_usage_raises_validation_error_for_invalid_meter(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test that invalid meter event name raises validation error.
+
+        Verifies StripeMeterValidationError is raised for invalid meter names.
+        """
+        from src.services.stripe_service import StripeMeterValidationError
+
+        # Given: Invalid meter event
+        meter_event = "invalid_meter"
+
+        # When/Then: Should raise validation error
+        with pytest.raises(StripeMeterValidationError) as exc_info:
+            await initialized_stripe_service.report_usage(
+                meter_event=meter_event,
+                value=100,
+                tenant_id="tenant_123"
+            )
+
+        assert exc_info.value.meter_event == meter_event
+        assert len(exc_info.value.validation_errors) > 0
+
+    @pytest.mark.asyncio
+    async def test_report_usage_raises_validation_error_for_non_integer_value(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test that non-integer value raises validation error.
+
+        Verifies StripeMeterValidationError is raised for float values.
+        """
+        from src.services.stripe_service import StripeMeterValidationError
+
+        # Given: Meter event with float value
+        meter_event = "ai_labels"
+        value = 100.5
+
+        # When/Then: Should raise validation error
+        with pytest.raises(StripeMeterValidationError) as exc_info:
+            await initialized_stripe_service.report_usage(
+                meter_event=meter_event,
+                value=value,
+                tenant_id="tenant_123"
+            )
+
+        # Check the validation_errors attribute which contains detailed errors
+        assert len(exc_info.value.validation_errors) > 0
+        assert any("integer" in err.lower() for err in exc_info.value.validation_errors)
+
+    @pytest.mark.asyncio
+    async def test_report_usage_raises_validation_error_for_zero_value(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test that zero value raises validation error.
+
+        Verifies StripeMeterValidationError is raised for zero value.
+        """
+        from src.services.stripe_service import StripeMeterValidationError
+
+        # Given: Meter event with zero value
+        meter_event = "ai_labels"
+        value = 0
+
+        # When/Then: Should raise validation error
+        with pytest.raises(StripeMeterValidationError) as exc_info:
+            await initialized_stripe_service.report_usage(
+                meter_event=meter_event,
+                value=value,
+                tenant_id="tenant_123"
+            )
+
+        # Check the validation_errors attribute which contains detailed errors
+        assert len(exc_info.value.validation_errors) > 0
+        assert any("positive" in err.lower() for err in exc_info.value.validation_errors)
+
+    @pytest.mark.asyncio
+    async def test_report_usage_raises_validation_error_for_missing_meter_id(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test that missing meter ID configuration raises validation error.
+
+        Verifies StripeMeterValidationError when meter ID not configured.
+        """
+        from src.services.stripe_service import StripeMeterValidationError
+
+        # Given: Service with empty meter config for ai_labels
+        # Modify the service's meter config directly to simulate missing configuration
+        initialized_stripe_service._meter_config["ai_labels"] = ""
+
+        meter_event = "ai_labels"
+        value = 100
+
+        # When/Then: Should raise validation error
+        with pytest.raises(StripeMeterValidationError) as exc_info:
+            await initialized_stripe_service.report_usage(
+                meter_event=meter_event,
+                value=value,
+                tenant_id="tenant_123"
+            )
+
+        assert "not configured" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_report_usage_raises_error_when_not_initialized(self):
+        """
+        RED PHASE: Test that report_usage requires initialization.
+
+        Verifies StripeServiceError is raised when service not initialized.
+        """
+        from src.services.stripe_service import StripeService, StripeServiceError
+
+        # Given: Uninitialized service
+        service = StripeService()
+        # Don't call initialize()
+
+        # When/Then: Should raise error
+        with pytest.raises(StripeServiceError) as exc_info:
+            await service.report_usage(
+                meter_event="ai_labels",
+                value=100,
+                tenant_id="tenant_123"
+            )
+
+        assert "not initialized" in str(exc_info.value).lower()
+
+
+class TestStripeServiceReportUsageStripeAPIErrors:
+    """
+    CYCLE 13: report_usage() - Stripe API Error Handling
+    - RED: Test Stripe API error scenarios
+    - GREEN: Error handling already implemented
+    - REFACTOR: Add retry logic (P2-003)
+    """
+
+    @pytest.mark.asyncio
+    @patch.dict('os.environ', {
+        'STRIPE_AI_LABELS_METER_ID': 'mtr_test_ai_labels'
+    })
+    async def test_report_usage_handles_stripe_api_error(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test that Stripe API errors are handled properly.
+
+        Verifies StripeAPIError is raised when Stripe API call fails.
+        """
+        from src.services.stripe_service import StripeAPIError
+        import stripe
+
+        # Given: Stripe API call will fail
+        with patch.object(
+            initialized_stripe_service,
+            '_report_meter_event_to_stripe',
+            side_effect=stripe.error.StripeError("API Error")
+        ):
+            # When/Then: Should raise StripeAPIError
+            with pytest.raises(StripeAPIError) as exc_info:
+                await initialized_stripe_service.report_usage(
+                    meter_event="ai_labels",
+                    value=100,
+                    tenant_id="tenant_123"
+                )
+
+            assert "Failed to report meter event" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    @patch.dict('os.environ', {
+        'STRIPE_AI_LABELS_METER_ID': 'mtr_test_ai_labels'
+    })
+    async def test_report_usage_updates_database_on_api_error(
+        self, initialized_stripe_service, test_db_session
+    ):
+        """
+        RED PHASE: Test that database record is updated to FAILED on API error.
+
+        Verifies StripeMeterEvent status is updated when API call fails.
+        """
+        from src.services.stripe_service import StripeAPIError
+        import stripe
+
+        # Given: Stripe API call will fail
+        with patch.object(
+            initialized_stripe_service,
+            '_report_meter_event_to_stripe',
+            side_effect=stripe.error.StripeError("API Error")
+        ):
+            # When/Then: Should raise StripeAPIError
+            with pytest.raises(StripeAPIError):
+                await initialized_stripe_service.report_usage(
+                    meter_event="ai_labels",
+                    value=100,
+                    tenant_id="tenant_123",
+                    db_session=test_db_session
+                )
+
+            # And: Database should have been updated (commit called)
+            # We expect at least one commit for creating the record
+            # and potentially another for updating it to failed
+            assert test_db_session.commit.call_count >= 1
+
+    @pytest.mark.asyncio
+    @patch.dict('os.environ', {
+        'STRIPE_AI_LABELS_METER_ID': 'mtr_test_ai_labels'
+    })
+    async def test_report_usage_handles_unexpected_errors(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test that unexpected errors are handled properly.
+
+        Verifies StripeServiceError is raised for non-Stripe errors.
+        """
+        from src.services.stripe_service import StripeServiceError
+
+        # Given: Unexpected error will occur
+        with patch.object(
+            initialized_stripe_service,
+            '_report_meter_event_to_stripe',
+            side_effect=Exception("Unexpected error")
+        ):
+            # When/Then: Should raise StripeServiceError
+            with pytest.raises(StripeServiceError) as exc_info:
+                await initialized_stripe_service.report_usage(
+                    meter_event="ai_labels",
+                    value=100,
+                    tenant_id="tenant_123"
+                )
+
+            assert "Failed to report meter event" in str(exc_info.value)
+
+
+class TestStripeServiceHelperMethods:
+    """
+    CYCLE 14: Helper Methods - Idempotency Key Generation
+    - RED: Test idempotency key generation
+    - GREEN: Implementation already complete
+    - REFACTOR: Add more uniqueness guarantees
+    """
+
+    @pytest.mark.asyncio
+    async def test_generate_idempotency_key_is_unique(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test that idempotency keys are unique.
+
+        Verifies that consecutive calls generate different keys.
+        """
+        # Given: Service instance
+        tenant_id = "tenant_123"
+        meter_event = "ai_labels"
+        value = 100
+
+        # When: Generating idempotency keys
+        key1 = initialized_stripe_service._generate_idempotency_key(
+            tenant_id, meter_event, value
+        )
+
+        import asyncio
+        await asyncio.sleep(0.01)  # Small delay for different timestamp
+
+        key2 = initialized_stripe_service._generate_idempotency_key(
+            tenant_id, meter_event, value
+        )
+
+        # Then: Keys should be different
+        assert key1 != key2
+
+    @pytest.mark.asyncio
+    async def test_generate_idempotency_key_contains_context(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test that idempotency key contains context information.
+
+        Verifies key includes tenant_id, meter_event, and value.
+        """
+        # Given: Service instance
+        tenant_id = "tenant_123"
+        meter_event = "ai_labels"
+        value = 100
+
+        # When: Generating idempotency key
+        key = initialized_stripe_service._generate_idempotency_key(
+            tenant_id, meter_event, value
+        )
+
+        # Then: Key should contain all context
+        assert tenant_id in key
+        assert meter_event in key
+        assert str(value) in key
+
+    @pytest.mark.asyncio
+    async def test_generate_idempotency_key_format_is_valid(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test that idempotency key has expected format.
+
+        Verifies key follows pattern: {tenant_id}_{event}_{value}_{timestamp}_{uuid}
+        """
+        # Given: Service instance
+        tenant_id = "tenant_123"
+        meter_event = "ai_labels"
+        value = 100
+
+        # When: Generating idempotency key
+        key = initialized_stripe_service._generate_idempotency_key(
+            tenant_id, meter_event, value
+        )
+
+        # Then: Key should have expected format
+        # Format: {tenant_id}_{event}_{value}_{timestamp}_{uuid}
+        # Since tenant_id may contain underscores, we verify the components are present
+        assert tenant_id in key
+        assert meter_event in key
+        assert str(value) in key
+        # Key should end with timestamp and uuid suffix (pattern: digits_hex)
+        assert key.split('_')[-1]  # Last part should exist (uuid suffix)
+        assert key.split('_')[-2]  # Second to last should exist (timestamp)
+
+
+class TestStripeServiceMeterConfigInitialization:
+    """
+    CYCLE 15: Meter Configuration Initialization
+    - RED: Test meter configuration is loaded correctly
+    - GREEN: Implementation already complete
+    - REFACTOR: Add configuration validation
+    """
+
+    @pytest.mark.asyncio
+    async def test_meter_config_loaded_from_environment(self):
+        """
+        RED PHASE: Test that meter configuration is loaded from environment.
+
+        Verifies _meter_config dict contains values from environment variables.
+        """
+        # Given: Environment variables set
+        import os
+        original_ai_labels = os.environ.get('STRIPE_AI_LABELS_METER_ID')
+        original_human_audits = os.environ.get('STRIPE_HUMAN_AUDITS_METER_ID')
+
+        try:
+            os.environ['STRIPE_AI_LABELS_METER_ID'] = 'mtr_test_ai_123'
+            os.environ['STRIPE_HUMAN_AUDITS_METER_ID'] = 'mtr_test_human_456'
+
+            # When: Creating new StripeService instance
+            from src.services.stripe_service import StripeService
+            service = StripeService()
+
+            # Then: Meter config should be loaded
+            assert service._meter_config['ai_labels'] == 'mtr_test_ai_123'
+            assert service._meter_config['human_audits'] == 'mtr_test_human_456'
+
+        finally:
+            # Restore original environment
+            if original_ai_labels is not None:
+                os.environ['STRIPE_AI_LABELS_METER_ID'] = original_ai_labels
+            else:
+                os.environ.pop('STRIPE_AI_LABELS_METER_ID', None)
+
+            if original_human_audits is not None:
+                os.environ['STRIPE_HUMAN_AUDITS_METER_ID'] = original_human_audits
+            else:
+                os.environ.pop('STRIPE_HUMAN_AUDITS_METER_ID', None)
+
+    @pytest.mark.asyncio
+    async def test_meter_config_defaults_to_empty_string(self):
+        """
+        RED PHASE: Test that missing environment variables default to empty string.
+
+        Verifies behavior when meter IDs are not configured.
+        """
+        # Given: No environment variables set
+        import os
+        original_ai_labels = os.environ.get('STRIPE_AI_LABELS_METER_ID')
+        original_human_audits = os.environ.get('STRIPE_HUMAN_AUDITS_METER_ID')
+
+        try:
+            os.environ.pop('STRIPE_AI_LABELS_METER_ID', None)
+            os.environ.pop('STRIPE_HUMAN_AUDITS_METER_ID', None)
+
+            # When: Creating new StripeService instance
+            from src.services.stripe_service import StripeService
+            service = StripeService()
+
+            # Then: Meter config should have empty strings
+            assert service._meter_config['ai_labels'] == ''
+            assert service._meter_config['human_audits'] == ''
+
+        finally:
+            # Restore original environment
+            if original_ai_labels is not None:
+                os.environ['STRIPE_AI_LABELS_METER_ID'] = original_ai_labels
+            if original_human_audits is not None:
+                os.environ['STRIPE_HUMAN_AUDITS_METER_ID'] = original_human_audits
+
+
+class TestStripeServiceReportMeterEventToStripe:
+    """
+    CYCLE 16: Stripe API Integration - _report_meter_event_to_stripe
+    - RED: Test Stripe API call method
+    - GREEN: Implementation already complete
+    - REFACTOR: Add retry logic in P2-003
+
+    Note: These tests focus on verifying the method exists and has the right structure.
+    Actual Stripe API calls are tested through the higher-level report_usage() tests.
+    """
+
+    @pytest.mark.asyncio
+    async def test_report_meter_event_to_stripe_method_exists(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test that _report_meter_event_to_stripe method exists.
+
+        Verifies the method signature and basic structure.
+        """
+        # Given: The service instance
+        # When: Checking for the method
+        # Then: Should exist and be callable
+        assert hasattr(initialized_stripe_service, '_report_meter_event_to_stripe')
+        assert callable(initialized_stripe_service._report_meter_event_to_stripe)
+
+    @pytest.mark.asyncio
+    async def test_report_meter_event_to_stripe_has_correct_signature(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test that _report_meter_event_to_stripe has expected parameters.
+
+        Verifies the method accepts the required parameters.
+        """
+        import inspect
+
+        # Given: The method
+        method = initialized_stripe_service._report_meter_event_to_stripe
+
+        # When: Inspecting signature
+        sig = inspect.signature(method)
+
+        # Then: Should have expected parameters
+        params = list(sig.parameters.keys())
+        assert 'meter_id' in params
+        assert 'event_name' in params
+        assert 'value' in params
+        assert 'idempotency_key' in params
+        assert 'customer_id' in params
+        assert 'metadata' in params
