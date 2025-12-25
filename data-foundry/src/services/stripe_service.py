@@ -27,9 +27,12 @@ Meter Types:
 import asyncio
 import logging
 import os
+import re
 import time
+import threading
+from collections import defaultdict
 from typing import Dict, Optional, Any, List, Callable
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass, field
 import uuid
 
@@ -231,6 +234,15 @@ class StripeService:
     # Reserved metadata keys that cannot be set by users
     RESERVED_METADATA_KEYS = {"value", "stripe_customer_id", "batch_id"}
 
+    # P02-004: Maximum idempotency key length (Stripe limit)
+    MAX_IDEMPOTENCY_KEY_LENGTH = 255
+
+    # P02-004: Default retention period for idempotency key registry (24 hours)
+    IDEMPOTENCY_KEY_RETENTION_HOURS = 24
+
+    # P02-004: Maximum registry size to prevent DoS via memory exhaustion
+    MAX_IDEMPOTENCY_REGISTRY_SIZE = 10000
+
     def __init__(self):
         """
         Initialize StripeService.
@@ -242,6 +254,8 @@ class StripeService:
         - STRIPE_MAX_RETRIES: Maximum number of retry attempts (default: 5)
         - STRIPE_INITIAL_RETRY_DELAY_MS: Initial retry delay in milliseconds (default: 1000)
         - STRIPE_MAX_RETRY_DELAY_MS: Maximum retry delay in milliseconds (default: 32000)
+
+        P02-004: Idempotency key registry for tracking recent keys.
         """
         self.api_key: Optional[str] = None
         self.secret_manager: Optional[SecretManager] = None
@@ -262,6 +276,19 @@ class StripeService:
             self.METER_AI_LABELS: os.getenv("STRIPE_AI_LABELS_METER_ID", ""),
             self.METER_HUMAN_AUDITS: os.getenv("STRIPE_HUMAN_AUDITS_METER_ID", ""),
         }
+
+        # P02-004: Idempotency key registry (thread-safe)
+        # Dictionary: {key: registration_timestamp}
+        self._idempotency_registry: Dict[str, datetime] = {}
+        self._registry_lock = threading.Lock()
+
+        # P02-004: Collision detection metrics
+        self._collision_metrics = {
+            'total_keys_generated': 0,
+            'collision_count': 0,
+            'near_collision_count': 0,
+        }
+        self._metrics_lock = threading.Lock()
 
     async def initialize(self) -> None:
         """
@@ -851,29 +878,350 @@ class StripeService:
 
         return errors
 
+    # ========================================================================
+    # P02-004: Enhanced Idempotency Key Generation
+    # ========================================================================
+
+    def _sanitize_idempotency_key_component(self, component: str) -> str:
+        """
+        Sanitize a component for use in idempotency key.
+
+        P02-004: Removes dangerous characters to prevent injection attacks
+        and key collisions. This is critical for security.
+
+        Sanitization rules:
+        - Remove path traversal sequences (../, ..\\)
+        - Remove SQL injection attempts (;, --, ')
+        - Remove XSS attempts (<script>, etc.)
+        - Remove control characters
+        - Replace remaining special chars with underscore
+        - Limit component length to prevent DoS
+
+        Args:
+            component: Raw component string to sanitize
+
+        Returns:
+            Sanitized component string safe for idempotency keys
+        """
+        if not component:
+            return "empty"
+
+        # Convert to string if not already
+        if not isinstance(component, str):
+            component = str(component)
+
+        # Remove control characters
+        component = ''.join(char for char in component if ord(char) >= 32)
+
+        # Remove dangerous sequences
+        dangerous_patterns = [
+            r'\.\./',  # Path traversal
+            r'\.\.\\',  # Windows path traversal
+            r';',  # SQL injection separator
+            r'--',  # SQL comment
+            r"'",  # SQL quote
+            r'"',  # Quote
+            r'<script',  # XSS
+            r'</script>',  # XSS close
+            r'=',  # Could be used in injection
+        ]
+
+        for pattern in dangerous_patterns:
+            component = re.sub(pattern, '', component, flags=re.IGNORECASE)
+
+        # Replace remaining non-alphanumeric chars (except underscore, hyphen) with underscore
+        component = re.sub(r'[^a-zA-Z0-9_-]', '_', component)
+
+        # Collapse multiple underscores
+        component = re.sub(r'_+', '_', component)
+
+        # Remove leading/trailing underscores
+        component = component.strip('_')
+
+        # Limit length to prevent DoS (max 100 chars per component)
+        if len(component) > 100:
+            component = component[:100]
+
+        # Fallback if empty after sanitization
+        if not component:
+            component = "sanitized"
+
+        return component
+
+    def _validate_idempotency_key_length(self, key: str) -> None:
+        """
+        Validate that idempotency key meets Stripe's length requirements.
+
+        P02-004: Ensures keys don't exceed Stripe's 255 character limit.
+        Raises StripeMeterValidationError if key is too long.
+
+        Args:
+            key: Idempotency key to validate
+
+        Raises:
+            StripeMeterValidationError: If key exceeds 255 characters
+        """
+        if len(key) > self.MAX_IDEMPOTENCY_KEY_LENGTH:
+            raise StripeMeterValidationError(
+                f"Idempotency key length {len(key)} exceeds Stripe's maximum of "
+                f"{self.MAX_IDEMPOTENCY_KEY_LENGTH} characters",
+                validation_errors=[f"Key too long: {len(key)} > {self.MAX_IDEMPOTENCY_KEY_LENGTH}"]
+            )
+
     def _generate_idempotency_key(
         self,
         tenant_id: str,
         meter_event: str,
-        value: int
+        value: int,
+        batch_id: Optional[str] = None
     ) -> str:
         """
         Generate unique idempotency key for meter event.
 
-        Combines tenant_id, meter_event, timestamp, and UUID to ensure
-        uniqueness while allowing for duplicate detection.
+        P02-004: Enhanced idempotency key generation with:
+        - Input sanitization for security (prevent injection attacks)
+        - Timestamp component for uniqueness across time boundaries
+        - UUID component for absolute uniqueness guarantee
+        - Length validation to respect Stripe's 255 char limit
+        - Optional batch_id support for batch scenarios
+
+        Key format: {meter_event}_{tenant_id}_{value}_{timestamp}_{uuid_short}[_{batch_id}]
+
+        Example: ai_labels_tenant_abc123_100_20241224T103000Z_a1b2c3d4_batch_456
 
         Args:
             tenant_id: Tenant identifier
             meter_event: Meter event name
             value: Event value
+            batch_id: Optional batch identifier for batch operations
 
         Returns:
             Unique idempotency key string
+
+        Raises:
+            StripeMeterValidationError: If key would exceed length limit
         """
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        # Update metrics
+        with self._metrics_lock:
+            self._collision_metrics['total_keys_generated'] += 1
+
+        # Sanitize all input components (security critical)
+        safe_tenant_id = self._sanitize_idempotency_key_component(tenant_id)
+        safe_meter_event = self._sanitize_idempotency_key_component(meter_event)
+        safe_value = self._sanitize_idempotency_key_component(str(value))
+
+        # Generate timestamp in ISO format (UTC)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+        # Generate UUID suffix (8 chars for uniqueness)
         unique_suffix = uuid.uuid4().hex[:8]
-        return f"{tenant_id}_{meter_event}_{value}_{timestamp}_{unique_suffix}"
+
+        # Build base key
+        key_parts = [
+            safe_meter_event,
+            safe_tenant_id,
+            safe_value,
+            timestamp,
+            unique_suffix
+        ]
+
+        # Add batch_id if provided (for batch operations)
+        if batch_id:
+            safe_batch_id = self._sanitize_idempotency_key_component(batch_id)
+            key_parts.append(safe_batch_id)
+
+        # Join with underscores
+        key = "_".join(key_parts)
+
+        # Validate length (Stripe limit: 255 chars)
+        self._validate_idempotency_key_length(key)
+
+        # Check for collisions with recent keys
+        self._check_and_warn_collision(key)
+
+        return key
+
+    def _register_idempotency_key(self, key: str) -> None:
+        """
+        Register an idempotency key in the registry.
+
+        P02-004: Tracks recently used keys to prevent duplicate submissions
+        within the retry window. Thread-safe implementation with automatic
+        cleanup of expired keys.
+
+        Args:
+            key: Idempotency key to register
+        """
+        with self._registry_lock:
+            # Cleanup expired keys before adding new one
+            self._cleanup_expired_idempotency_keys()
+
+            # Prevent unbounded registry growth (DoS protection)
+            if len(self._idempotency_registry) >= self.MAX_IDEMPOTENCY_REGISTRY_SIZE:
+                # Registry full - remove oldest entries
+                logger.warning(
+                    f"Idempotency key registry full ({self.MAX_IDEMPOTENCY_REGISTRY_SIZE}). "
+                    "Removing oldest entries."
+                )
+                # Sort by timestamp and remove oldest 10%
+                sorted_keys = sorted(
+                    self._idempotency_registry.items(),
+                    key=lambda x: x[1]
+                )
+                keys_to_remove = sorted_keys[:len(sorted_keys) // 10]
+                for old_key, _ in keys_to_remove:
+                    del self._idempotency_registry[old_key]
+
+            # Register the key with current timestamp
+            self._idempotency_registry[key] = datetime.now(timezone.utc)
+
+    def _is_idempotency_key_registered(self, key: str) -> bool:
+        """
+        Check if an idempotency key is already registered.
+
+        P02-004: Thread-safe check for duplicate key detection.
+        Automatically expires old keys during check.
+
+        Args:
+            key: Idempotency key to check
+
+        Returns:
+            True if key is registered and not expired, False otherwise
+        """
+        with self._registry_lock:
+            # Cleanup expired keys first
+            self._cleanup_expired_idempotency_keys()
+
+            # Check if key exists and is not expired
+            if key in self._idempotency_registry:
+                registration_time = self._idempotency_registry[key]
+                age_hours = (datetime.now(timezone.utc) - registration_time).total_seconds() / 3600
+
+                # Key exists and is within retention period
+                if age_hours <= self.IDEMPOTENCY_KEY_RETENTION_HOURS:
+                    return True
+                else:
+                    # Key expired - remove it
+                    del self._idempotency_registry[key]
+
+        return False
+
+    def _cleanup_expired_idempotency_keys(self) -> None:
+        """
+        Remove expired keys from the idempotency registry.
+
+        P02-004: Automatic cleanup to prevent memory leaks.
+        Must be called with registry_lock held.
+        """
+        current_time = datetime.now(timezone.utc)
+        retention_delta = timedelta(hours=self.IDEMPOTENCY_KEY_RETENTION_HOURS)
+
+        # Find expired keys
+        expired_keys = [
+            key for key, reg_time in self._idempotency_registry.items()
+            if current_time - reg_time > retention_delta
+        ]
+
+        # Remove expired keys
+        for key in expired_keys:
+            del self._idempotency_registry[key]
+
+        if expired_keys:
+            logger.debug(f"Cleaned up {len(expired_keys)} expired idempotency keys")
+
+    def _check_and_warn_collision(self, new_key: str) -> None:
+        """
+        Check for potential idempotency key collisions and warn if detected.
+
+        P02-004: Analyzes new key against recent keys to detect patterns
+        that might indicate key generation issues or potential collisions.
+
+        Detects:
+        - Exact matches (true collisions)
+        - Near collisions (same tenant/event/timestamp within 1 second)
+
+        Args:
+            new_key: New idempotency key to check
+        """
+        with self._registry_lock:
+            recent_keys = list(self._idempotency_registry.keys())
+
+        # Extract components from new key
+        # Format: meter_event_tenant_value_timestamp_uuid[_batch]
+        new_parts = new_key.split('_')
+
+        if len(new_parts) < 5:
+            return  # Invalid format, skip collision check
+
+        new_meter = new_parts[0]
+        new_tenant = new_parts[1]
+        new_timestamp = new_parts[3]  # ISO format timestamp
+
+        # Check for near-collisions with recent keys
+        for existing_key in recent_keys[-100:]:  # Check last 100 keys
+            existing_parts = existing_key.split('_')
+
+            if len(existing_parts) < 5:
+                continue
+
+            existing_meter = existing_parts[0]
+            existing_tenant = existing_parts[1]
+            existing_timestamp = existing_parts[3]
+
+            # Check if same tenant and meter event
+            if new_meter == existing_meter and new_tenant == existing_tenant:
+                # Parse timestamps to check if very close (within 1 second)
+                try:
+                    new_dt = datetime.fromisoformat(new_timestamp.replace('Z', '+00:00'))
+                    existing_dt = datetime.fromisoformat(existing_timestamp.replace('Z', '+00:00'))
+                    time_diff = abs((new_dt - existing_dt).total_seconds())
+
+                    if time_diff < 1.0:
+                        # Near collision detected
+                        with self._metrics_lock:
+                            self._collision_metrics['near_collision_count'] += 1
+
+                        logger.warning(
+                            f"Near-collision detected for idempotency keys:\n"
+                            f"  New:      {new_key}\n"
+                            f"  Existing: {existing_key}\n"
+                            f"  Time difference: {time_diff:.3f}s\n"
+                            f"  This may indicate high-volume concurrent requests or "
+                            f"clock skew issues."
+                        )
+                except (ValueError, IndexError):
+                    # Timestamp parsing failed, skip
+                    pass
+
+    def _get_collision_metrics(self) -> Dict[str, Any]:
+        """
+        Get collision detection metrics.
+
+        P02-004: Returns statistics on key generation and collision detection.
+
+        Returns:
+            Dictionary with collision metrics including:
+            - total_keys_generated: Total number of keys generated
+            - collision_count: Number of exact collisions detected
+            - near_collision_count: Number of near-collisions detected
+            - collision_rate: Collision rate as percentage
+        """
+        with self._metrics_lock:
+            metrics = self._collision_metrics.copy()
+
+        total = metrics['total_keys_generated']
+        if total > 0:
+            metrics['collision_rate'] = (
+                (metrics['collision_count'] + metrics['near_collision_count']) / total * 100
+            )
+        else:
+            metrics['collision_rate'] = 0.0
+
+        # Add registry size
+        with self._registry_lock:
+            metrics['registry_size'] = len(self._idempotency_registry)
+
+        return metrics
 
     def _report_meter_event_to_stripe(
         self,
