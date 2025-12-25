@@ -29,7 +29,7 @@ from src.models.tenant import Tenant
 from src.models.stripe_billing import StripeCustomer, StripeSubscription, StripeMeterEvent
 
 
-class Cycle1_TestStripeCustomerModel:
+class TestStripeCustomerModel:
     """
     CYCLE 1: StripeCustomer Model
     - RED: Test for StripeCustomer model fields and constraints
@@ -138,7 +138,7 @@ class Cycle1_TestStripeCustomerModel:
         assert 'unique' in str(field.metadata).lower() or hasattr(StripeCustomer, '__table_args__')
 
 
-class Cycle2_TestStripeCustomersMigration:
+class TestStripeCustomersMigration:
     """
     CYCLE 2: stripe_customers Table Migration
     - RED: Test that verifies table exists and has correct schema
@@ -278,7 +278,7 @@ class Cycle2_TestStripeCustomersMigration:
             "Should have index on stripe_customer_id"
 
 
-class Cycle3_TestStripeServiceExceptions:
+class TestStripeServiceExceptions:
     """
     CYCLE 3: StripeService Exception Classes
     - RED: Test for custom exceptions
@@ -390,7 +390,7 @@ class Cycle3_TestStripeServiceExceptions:
         assert stripe_message in str(exc_info.value)
 
 
-class Cycle4_TestStripeServiceInitialization:
+class TestStripeServiceInitialization:
     """
     CYCLE 4: StripeService.initialize()
     - RED: Test initialization with SecretManager
@@ -478,7 +478,7 @@ def test_db_session():
     return session
 
 
-class Cycle5_TestStripeServiceCreateCustomer:
+class TestStripeServiceCreateCustomer:
     """
     CYCLE 5: StripeService.create_customer()
     - RED: Test successful customer creation
@@ -573,7 +573,7 @@ class Cycle5_TestStripeServiceCreateCustomer:
         assert added_customer.name == "Test Org"
 
 
-class Cycle6_TestStripeServiceGetCustomer:
+class TestStripeServiceGetCustomer:
     """
     CYCLE 6: StripeService.get_customer_by_tenant()
     - RED: Test retrieving existing customer
@@ -646,7 +646,7 @@ class Cycle6_TestStripeServiceGetCustomer:
         assert result is None
 
 
-class Cycle7_TestStripeServiceUpdateCustomer:
+class TestStripeServiceUpdateCustomer:
     """
     CYCLE 7: StripeService.update_customer()
     - RED: Test partial update (email only)
@@ -694,7 +694,7 @@ class Cycle7_TestStripeServiceUpdateCustomer:
         assert result['stripe_customer_id'] == "cus_update123"
 
 
-class Cycle8_TestStripeServiceDeleteCustomer:
+class TestStripeServiceDeleteCustomer:
     """
     CYCLE 8: StripeService.delete_customer()
     - RED: Test customer deletion

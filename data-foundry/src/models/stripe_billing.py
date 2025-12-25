@@ -9,8 +9,47 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 from enum import Enum
 
-from sqlalchemy import JSON, Column, Integer, String, DateTime, Boolean, Text
-from sqlmodel import Field, SQLModel
+from sqlalchemy import JSON, Column, Integer, String, DateTime, Boolean, Text, Index, ForeignKey
+from sqlmodel import Field, SQLModel, Relationship
+
+
+class StripeCustomer(SQLModel, table=True):
+    """
+    Stripe customer tracking model.
+
+    Maps Data Foundry tenants to Stripe customers for billing.
+    Stores customer details cached from Stripe for query efficiency.
+    Enables bidirectional lookup between tenant_id and stripe_customer_id.
+    """
+
+    __tablename__ = "stripe_customers"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(
+        unique=True,
+        index=True,
+        foreign_key="tenants.tenant_id",
+        description="Tenant identifier from Data Foundry"
+    )
+
+    # Stripe identifier
+    stripe_customer_id: str = Field(
+        unique=True,
+        index=True,
+        description="Unique Stripe customer ID (cus_*)"
+    )
+
+    # Customer details (cached for query efficiency)
+    email: Optional[str] = Field(default=None, description="Customer email address")
+    name: Optional[str] = Field(default=None, description="Customer name")
+
+    # Audit trail
+    created_by: Optional[str] = Field(default=None, description="User who created the record")
+    updated_by: Optional[str] = Field(default=None, description="User who last updated the record")
+
+    # Timestamps
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class StripeSubscriptionStatus(str, Enum):
