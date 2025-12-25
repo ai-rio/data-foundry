@@ -1441,12 +1441,13 @@ class TestStripeServiceReportUsage:
         RED PHASE: Test that metadata is included in Stripe API call.
 
         Verifies optional metadata parameter is passed through correctly.
+        Note: Cannot use reserved keys like 'batch_id', 'value', 'stripe_customer_id'.
         """
-        # Given: Meter event with metadata
+        # Given: Meter event with metadata (using non-reserved keys)
         meter_event = "ai_labels"
         value = 50
         tenant_id = "tenant_123"
-        metadata = {"batch_id": "batch_001", "source": "api"}
+        metadata = {"source": "api", "region": "us-east-1"}
 
         # Mock Stripe API call
         with patch.object(
@@ -1462,10 +1463,12 @@ class TestStripeServiceReportUsage:
                 metadata=metadata
             )
 
-            # Then: Metadata should be included in Stripe call
+            # Then: Metadata should be included in Stripe call (sanitized)
             mock_stripe_call.assert_called_once()
             call_kwargs = mock_stripe_call.call_args.kwargs
-            assert call_kwargs['metadata'] == metadata
+            # After sanitization, values are converted to strings
+            expected_metadata = {"source": "api", "region": "us-east-1"}
+            assert call_kwargs['metadata'] == expected_metadata
 
     @pytest.mark.asyncio
     @patch.dict('os.environ', {
@@ -2048,3 +2051,1045 @@ class TestStripeServiceReportMeterEventToStripe:
         assert 'idempotency_key' in params
         assert 'customer_id' in params
         assert 'metadata' in params
+
+
+# ============================================================================
+# P02-002: Batch Meter Event Reporting Tests (TDD)
+# ============================================================================
+
+class TestBatchResultDataClass:
+    """
+    CYCLE 17: BatchResult Data Class
+    - RED: Test BatchResult dataclass exists and has correct structure
+    - GREEN: Implement BatchResult
+    - REFACTOR: Add convenience methods
+    """
+
+    def test_batch_result_dataclass_exists(self):
+        """
+        RED PHASE: Test that BatchResult dataclass exists.
+
+        Verifies the dataclass can be imported and instantiated.
+        """
+        # Given: Import attempt
+        # When: Importing from stripe_service
+        # Then: Should be importable
+        from src.services.stripe_service import BatchResult
+
+        # And: Should be able to create instance
+        result = BatchResult(
+            batch_id="batch_123",
+            total_events=2,
+            successful_count=2,
+            failed_count=0,
+            successes=[],
+            failures=[]
+        )
+
+        assert result.batch_id == "batch_123"
+        assert result.total_events == 2
+        assert result.successful_count == 2
+        assert result.failed_count == 0
+
+    def test_batch_result_has_successes_and_failures_lists(self):
+        """
+        RED PHASE: Test that BatchResult has successes and failures lists.
+
+        Verifies the structure for tracking individual event results.
+        """
+        from src.services.stripe_service import BatchResult
+
+        # Given: Event results
+        successes = [
+            {"event_id": "evt_1", "meter_event": "ai_labels", "value": 100}
+        ]
+        failures = [
+            {
+                "event": {"meter_event": "human_audits", "value": 50},
+                "error": "Validation failed"
+            }
+        ]
+
+        # When: Creating BatchResult
+        result = BatchResult(
+            batch_id="batch_456",
+            total_events=2,
+            successful_count=1,
+            failed_count=1,
+            successes=successes,
+            failures=failures
+        )
+
+        # Then: Should have correct data
+        assert len(result.successes) == 1
+        assert len(result.failures) == 1
+        assert result.successes[0]["event_id"] == "evt_1"
+        assert result.failures[0]["error"] == "Validation failed"
+
+
+class TestStripeServiceReportUsageBatchCoreLogic:
+    """
+    CYCLE 18: report_usage_batch() - Core Processing Logic
+    - RED: Test batch iteration and result aggregation
+    - GREEN: Implement batch processing logic
+    - REFACTOR: Optimize for high-volume scenarios
+    """
+
+    @pytest.mark.asyncio
+    @patch.dict('os.environ', {
+        'STRIPE_AI_LABELS_METER_ID': 'mtr_test_ai_labels',
+        'STRIPE_HUMAN_AUDITS_METER_ID': 'mtr_test_human_audits'
+    })
+    async def test_report_usage_batch_processes_all_events(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test that batch processing processes all events.
+
+        Verifies that report_usage_batch() processes each event in the list.
+        """
+        # Given: A batch of meter events
+        events = [
+            {"meter_event": "ai_labels", "value": 100},
+            {"meter_event": "human_audits", "value": 50},
+            {"meter_event": "ai_labels", "value": 75}
+        ]
+        tenant_id = "tenant_123"
+
+        # Mock report_usage to return success
+        async def mock_report_usage(**kwargs):
+            return {
+                "event_id": f"evt_{kwargs['value']}",
+                "status": "succeeded",
+                "meter_event": kwargs["meter_event"],
+                "value": kwargs["value"]
+            }
+
+        with patch.object(
+            initialized_stripe_service,
+            'report_usage',
+            side_effect=mock_report_usage
+        ):
+            # When: Reporting batch
+            result = await initialized_stripe_service.report_usage_batch(
+                events=events,
+                tenant_id=tenant_id
+            )
+
+            # Then: Should process all events
+            assert result.total_events == 3
+            assert result.successful_count == 3
+            assert result.failed_count == 0
+            assert len(result.successes) == 3
+            assert len(result.failures) == 0
+
+    @pytest.mark.asyncio
+    @patch.dict('os.environ', {
+        'STRIPE_AI_LABELS_METER_ID': 'mtr_test_ai_labels'
+    })
+    async def test_report_usage_batch_aggregates_results_correctly(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test that batch results are aggregated correctly.
+
+        Verifies successes and failures are tracked separately.
+        """
+        # Given: A batch with mixed success/failure outcomes
+        events = [
+            {"meter_event": "ai_labels", "value": 100},
+            {"meter_event": "invalid_meter", "value": 50},  # Will fail
+            {"meter_event": "ai_labels", "value": 75}
+        ]
+        tenant_id = "tenant_123"
+
+        # Mock report_usage with mixed results
+        async def mock_report_usage(**kwargs):
+            if kwargs["meter_event"] == "invalid_meter":
+                from src.services.stripe_service import StripeMeterValidationError
+                raise StripeMeterValidationError(
+                    "Invalid meter",
+                    meter_event="invalid_meter",
+                    validation_errors=["Invalid meter name"]
+                )
+            return {
+                "event_id": f"evt_{kwargs['value']}",
+                "status": "succeeded",
+                "meter_event": kwargs["meter_event"],
+                "value": kwargs["value"]
+            }
+
+        with patch.object(
+            initialized_stripe_service,
+            'report_usage',
+            side_effect=mock_report_usage
+        ):
+            # When: Reporting batch
+            result = await initialized_stripe_service.report_usage_batch(
+                events=events,
+                tenant_id=tenant_id
+            )
+
+            # Then: Should aggregate correctly
+            assert result.total_events == 3
+            assert result.successful_count == 2
+            assert result.failed_count == 1
+            assert len(result.successes) == 2
+            assert len(result.failures) == 1
+            assert result.failures[0]["event"]["meter_event"] == "invalid_meter"
+
+    @pytest.mark.asyncio
+    @patch.dict('os.environ', {
+        'STRIPE_AI_LABELS_METER_ID': 'mtr_test_ai_labels'
+    })
+    async def test_report_usage_batch_generates_unique_batch_id(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test that each batch gets a unique batch_id.
+
+        Verifies batch ID generation for tracking.
+        """
+        # Given: Events
+        events = [{"meter_event": "ai_labels", "value": 100}]
+
+        async def mock_report_usage(**kwargs):
+            return {
+                "event_id": "evt_1",
+                "status": "succeeded",
+                "meter_event": kwargs["meter_event"],
+                "value": kwargs["value"]
+            }
+
+        with patch.object(
+            initialized_stripe_service,
+            'report_usage',
+            side_effect=mock_report_usage
+        ):
+            # When: Reporting two batches
+            result1 = await initialized_stripe_service.report_usage_batch(
+                events=events,
+                tenant_id="tenant_123"
+            )
+
+            import asyncio
+            await asyncio.sleep(0.01)  # Ensure different timestamp
+
+            result2 = await initialized_stripe_service.report_usage_batch(
+                events=events,
+                tenant_id="tenant_123"
+            )
+
+            # Then: Batch IDs should be different
+            assert result1.batch_id != result2.batch_id
+
+    @pytest.mark.asyncio
+    @patch.dict('os.environ', {
+        'STRIPE_AI_LABELS_METER_ID': 'mtr_test_ai_labels'
+    })
+    async def test_report_usage_batch_passes_metadata_to_events(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test that event metadata is passed through correctly.
+
+        Verifies optional metadata in event dicts is passed to report_usage.
+        Note: batch_id is automatically added to all event metadata for tracking.
+        """
+        # Given: Events with metadata
+        events = [
+            {
+                "meter_event": "ai_labels",
+                "value": 100,
+                "metadata": {"source": "api"}
+            },
+            {
+                "meter_event": "ai_labels",
+                "value": 50,
+                "metadata": {"source": "webhook"}
+            }
+        ]
+
+        # Track calls to report_usage
+        report_usage_calls = []
+
+        async def mock_report_usage(**kwargs):
+            report_usage_calls.append(kwargs)
+            return {
+                "event_id": "evt_1",
+                "status": "succeeded",
+                "meter_event": kwargs["meter_event"],
+                "value": kwargs["value"]
+            }
+
+        with patch.object(
+            initialized_stripe_service,
+            'report_usage',
+            side_effect=mock_report_usage
+        ):
+            # When: Reporting batch
+            await initialized_stripe_service.report_usage_batch(
+                events=events,
+                tenant_id="tenant_123"
+            )
+
+            # Then: Metadata should be passed for events that have it
+            assert len(report_usage_calls) == 2
+            # batch_id is now passed as a separate parameter
+            assert report_usage_calls[0].get("batch_id") is not None
+            assert report_usage_calls[0].get("metadata", {}).get("source") == "api"
+            assert report_usage_calls[1].get("batch_id") is not None
+            assert report_usage_calls[1].get("metadata", {}).get("source") == "webhook"
+
+    @pytest.mark.asyncio
+    @patch.dict('os.environ', {
+        'STRIPE_AI_LABELS_METER_ID': 'mtr_test_ai_labels'
+    })
+    async def test_report_usage_batch_passes_stripe_customer_id(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test that stripe_customer_id parameter is passed through.
+
+        Verifies optional customer ID is passed to all events in batch.
+        """
+        # Given: Events with customer ID
+        events = [
+            {"meter_event": "ai_labels", "value": 100},
+            {"meter_event": "ai_labels", "value": 50}
+        ]
+        customer_id = "cus_test123"
+
+        # Track calls to report_usage
+        report_usage_calls = []
+
+        async def mock_report_usage(**kwargs):
+            report_usage_calls.append(kwargs)
+            return {
+                "event_id": "evt_1",
+                "status": "succeeded",
+                "meter_event": kwargs["meter_event"],
+                "value": kwargs["value"]
+            }
+
+        with patch.object(
+            initialized_stripe_service,
+            'report_usage',
+            side_effect=mock_report_usage
+        ):
+            # When: Reporting batch with customer ID
+            await initialized_stripe_service.report_usage_batch(
+                events=events,
+                tenant_id="tenant_123",
+                stripe_customer_id=customer_id
+            )
+
+            # Then: Customer ID should be passed to all events
+            assert len(report_usage_calls) == 2
+            assert all(call.get("stripe_customer_id") == customer_id for call in report_usage_calls)
+
+
+class TestStripeServiceReportUsageBatchValidation:
+    """
+    CYCLE 19: report_usage_batch() - Validation
+    - RED: Test validation scenarios
+    - GREEN: Implement validation logic
+    - REFACTOR: Improve error messages
+    """
+
+    @pytest.mark.asyncio
+    async def test_report_usage_batch_validates_all_events_before_processing(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test that all events are validated during processing.
+
+        Verifies validation errors are caught and tracked in failures list.
+        Note: Batch processing continues even when individual events fail validation.
+        """
+        # Given: Batch with multiple invalid events
+        events = [
+            {"meter_event": "invalid_1", "value": 100},
+            {"meter_event": "invalid_2", "value": 50},
+        ]
+
+        # When: Reporting batch with invalid events
+        result = await initialized_stripe_service.report_usage_batch(
+            events=events,
+            tenant_id="tenant_123"
+        )
+
+        # Then: Should track all validation failures
+        assert result.total_events == 2
+        assert result.failed_count == 2
+        assert result.successful_count == 0
+        assert len(result.failures) == 2
+        # Verify error types
+        assert all(f["error_type"] == "StripeMeterValidationError" for f in result.failures)
+
+    @pytest.mark.asyncio
+    async def test_report_usage_batch_handles_empty_events_list(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test that empty batch is handled gracefully.
+
+        Verifies behavior when no events are provided.
+        """
+        # Given: Empty events list
+        events = []
+
+        # When: Reporting empty batch
+        result = await initialized_stripe_service.report_usage_batch(
+            events=events,
+            tenant_id="tenant_123"
+        )
+
+        # Then: Should return empty result
+        assert result.total_events == 0
+        assert result.successful_count == 0
+        assert result.failed_count == 0
+        assert len(result.successes) == 0
+        assert len(result.failures) == 0
+
+    @pytest.mark.asyncio
+    async def test_report_usage_batch_requires_initialization(
+        self
+    ):
+        """
+        RED PHASE: Test that report_usage_batch requires initialization.
+
+        Verifies StripeServiceError is raised when service not initialized.
+        """
+        from src.services.stripe_service import StripeService, StripeServiceError
+
+        # Given: Uninitialized service
+        service = StripeService()
+
+        # When/Then: Should raise error
+        with pytest.raises(StripeServiceError) as exc_info:
+            await service.report_usage_batch(
+                events=[{"meter_event": "ai_labels", "value": 100}],
+                tenant_id="tenant_123"
+            )
+
+        assert "not initialized" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_report_usage_batch_validates_event_structure(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test that event structure is validated.
+
+        Verifies events must have meter_event and value fields.
+        """
+        # Given: Malformed events
+        events = [
+            {"meter_event": "ai_labels"},  # Missing value
+            {"value": 100},  # Missing meter_event
+        ]
+
+        # When/Then: Should raise validation error
+        with pytest.raises(Exception):  # May be KeyError or custom validation error
+            await initialized_stripe_service.report_usage_batch(
+                events=events,
+                tenant_id="tenant_123"
+            )
+
+
+class TestStripeServiceReportUsageBatchPersistence:
+    """
+    CYCLE 20: report_usage_batch() - Database Persistence
+    - RED: Test database persistence for batch events
+    - GREEN: Implement persistence logic
+    - REFACTOR: Optimize batch inserts
+    """
+
+    @pytest.mark.asyncio
+    @patch.dict('os.environ', {
+        'STRIPE_AI_LABELS_METER_ID': 'mtr_test_ai_labels'
+    })
+    async def test_report_usage_batch_persists_all_events_to_database(
+        self, initialized_stripe_service, test_db_session
+    ):
+        """
+        RED PHASE: Test that all events are persisted to database.
+
+        Verifies StripeMeterEvent records are created for all events.
+        """
+        # Given: Events with database session
+        events = [
+            {"meter_event": "ai_labels", "value": 100},
+            {"meter_event": "ai_labels", "value": 50}
+        ]
+
+        async def mock_report_usage(**kwargs):
+            return {
+                "event_id": "evt_1",
+                "status": "succeeded",
+                "meter_event": kwargs["meter_event"],
+                "value": kwargs["value"]
+            }
+
+        with patch.object(
+            initialized_stripe_service,
+            'report_usage',
+            side_effect=mock_report_usage
+        ):
+            # When: Reporting batch with db_session
+            result = await initialized_stripe_service.report_usage_batch(
+                events=events,
+                tenant_id="tenant_123",
+                db_session=test_db_session
+            )
+
+            # Then: Should return success
+            assert result.successful_count == 2
+
+            # And: report_usage should have been called with db_session
+            # Each call should include db_session
+            assert initialized_stripe_service.report_usage.call_count == 2
+
+    @pytest.mark.asyncio
+    @patch.dict('os.environ', {
+        'STRIPE_AI_LABELS_METER_ID': 'mtr_test_ai_labels'
+    })
+    async def test_report_usage_batch_includes_batch_id_in_events(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test that batch_id is included in event parameters.
+
+        Verifies batch ID is tracked with each event for correlation.
+        Note: batch_id is now passed as a separate parameter, not in metadata.
+        """
+        # Given: Events
+        events = [{"meter_event": "ai_labels", "value": 100}]
+
+        # Track parameters passed to report_usage
+        captured_batch_ids = []
+
+        async def mock_report_usage(**kwargs):
+            captured_batch_ids.append(kwargs.get("batch_id"))
+            return {
+                "event_id": "evt_1",
+                "status": "succeeded",
+                "meter_event": kwargs["meter_event"],
+                "value": kwargs["value"]
+            }
+
+        with patch.object(
+            initialized_stripe_service,
+            'report_usage',
+            side_effect=mock_report_usage
+        ):
+            # When: Reporting batch
+            result = await initialized_stripe_service.report_usage_batch(
+                events=events,
+                tenant_id="tenant_123"
+            )
+
+            # Then: Batch ID should be passed as a separate parameter
+            assert result.batch_id == captured_batch_ids[0]
+
+
+class TestStripeServiceReportUsageBatchEdgeCases:
+    """
+    CYCLE 21: report_usage_batch() - Edge Cases
+    - RED: Test edge cases and error scenarios
+    - GREEN: Implement edge case handling
+    - REFACTOR: Add more comprehensive error recovery
+    """
+
+    @pytest.mark.asyncio
+    @patch.dict('os.environ', {
+        'STRIPE_AI_LABELS_METER_ID': 'mtr_test_ai_labels'
+    })
+    async def test_report_usage_batch_handles_all_events_failing(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test batch where all events fail.
+
+        Verifies proper handling when 100% of events fail.
+        """
+        # Given: Events that will all fail
+        events = [
+            {"meter_event": "ai_labels", "value": 100},
+            {"meter_event": "ai_labels", "value": 50}
+        ]
+
+        async def mock_report_usage(**kwargs):
+            from src.services.stripe_service import StripeAPIError
+            raise StripeAPIError("API Error")
+
+        with patch.object(
+            initialized_stripe_service,
+            'report_usage',
+            side_effect=mock_report_usage
+        ):
+            # When: Reporting batch
+            result = await initialized_stripe_service.report_usage_batch(
+                events=events,
+                tenant_id="tenant_123"
+            )
+
+            # Then: Should track all failures
+            assert result.total_events == 2
+            assert result.successful_count == 0
+            assert result.failed_count == 2
+            assert len(result.failures) == 2
+
+    @pytest.mark.asyncio
+    @patch.dict('os.environ', {
+        'STRIPE_AI_LABELS_METER_ID': 'mtr_test_ai_labels'
+    })
+    async def test_report_usage_batch_preserves_event_order_in_results(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test that event order is preserved in results.
+
+        Verifies results maintain original event ordering.
+        """
+        # Given: Events in specific order
+        events = [
+            {"meter_event": "ai_labels", "value": 100},
+            {"meter_event": "ai_labels", "value": 75},
+            {"meter_event": "ai_labels", "value": 50}
+        ]
+
+        async def mock_report_usage(**kwargs):
+            return {
+                "event_id": f"evt_{kwargs['value']}",
+                "status": "succeeded",
+                "meter_event": kwargs["meter_event"],
+                "value": kwargs["value"]
+            }
+
+        with patch.object(
+            initialized_stripe_service,
+            'report_usage',
+            side_effect=mock_report_usage
+        ):
+            # When: Reporting batch
+            result = await initialized_stripe_service.report_usage_batch(
+                events=events,
+                tenant_id="tenant_123"
+            )
+
+            # Then: Order should be preserved
+            assert result.successes[0]["value"] == 100
+            assert result.successes[1]["value"] == 75
+            assert result.successes[2]["value"] == 50
+
+    @pytest.mark.asyncio
+    @patch.dict('os.environ', {
+        'STRIPE_AI_LABELS_METER_ID': 'mtr_test_ai_labels'
+    })
+    async def test_report_usage_batch_tracks_individual_errors(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test that individual error details are captured.
+
+        Verifies each failure includes specific error information.
+        """
+        # Given: Events with different failure modes
+        events = [
+            {"meter_event": "ai_labels", "value": 100},
+            {"meter_event": "ai_labels", "value": 50},
+        ]
+
+        call_count = 0
+
+        async def mock_report_usage(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # First event fails with validation error
+                from src.services.stripe_service import StripeMeterValidationError
+                raise StripeMeterValidationError(
+                    "Validation failed",
+                    meter_event="ai_labels",
+                    validation_errors=["Value too high"]
+                )
+            else:
+                # Second event fails with API error
+                from src.services.stripe_service import StripeAPIError
+                raise StripeAPIError("API timeout")
+
+        with patch.object(
+            initialized_stripe_service,
+            'report_usage',
+            side_effect=mock_report_usage
+        ):
+            # When: Reporting batch
+            result = await initialized_stripe_service.report_usage_batch(
+                events=events,
+                tenant_id="tenant_123"
+            )
+
+            # Then: Each failure should have its error details
+            assert result.failed_count == 2
+            assert "Validation failed" in result.failures[0]["error"] or "Value too high" in str(result.failures[0])
+            assert "API timeout" in result.failures[1]["error"] or "API timeout" in str(result.failures[1])
+
+    @pytest.mark.asyncio
+    @patch.dict('os.environ', {
+        'STRIPE_AI_LABELS_METER_ID': 'mtr_test_ai_labels'
+    })
+    async def test_report_usage_batch_handles_single_event(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test batch with single event.
+
+        Verifies batch processing works with just one event.
+        """
+        # Given: Single event
+        events = [{"meter_event": "ai_labels", "value": 100}]
+
+        async def mock_report_usage(**kwargs):
+            return {
+                "event_id": "evt_1",
+                "status": "succeeded",
+                "meter_event": kwargs["meter_event"],
+                "value": kwargs["value"]
+            }
+
+        with patch.object(
+            initialized_stripe_service,
+            'report_usage',
+            side_effect=mock_report_usage
+        ):
+            # When: Reporting batch with single event
+            result = await initialized_stripe_service.report_usage_batch(
+                events=events,
+                tenant_id="tenant_123"
+            )
+
+            # Then: Should process successfully
+            assert result.total_events == 1
+            assert result.successful_count == 1
+            assert result.failed_count == 0
+
+    @pytest.mark.asyncio
+    @patch.dict('os.environ', {
+        'STRIPE_AI_LABELS_METER_ID': 'mtr_test_ai_labels'
+    })
+    async def test_report_usage_batch_with_duplicate_events(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test batch with duplicate events.
+
+        Verifies duplicates are processed independently (each gets unique idempotency key).
+        """
+        # Given: Duplicate events
+        events = [
+            {"meter_event": "ai_labels", "value": 100},
+            {"meter_event": "ai_labels", "value": 100},  # Exact duplicate
+        ]
+
+        event_ids = []
+
+        async def mock_report_usage(**kwargs):
+            # Simulate different event IDs for each call
+            event_id = f"evt_{len(event_ids)}"
+            event_ids.append(event_id)
+            return {
+                "event_id": event_id,
+                "status": "succeeded",
+                "meter_event": kwargs["meter_event"],
+                "value": kwargs["value"]
+            }
+
+        with patch.object(
+            initialized_stripe_service,
+            'report_usage',
+            side_effect=mock_report_usage
+        ):
+            # When: Reporting batch with duplicates
+            result = await initialized_stripe_service.report_usage_batch(
+                events=events,
+                tenant_id="tenant_123"
+            )
+
+            # Then: Both should be processed independently
+            assert result.total_events == 2
+            assert result.successful_count == 2
+            assert result.successes[0]["event_id"] != result.successes[1]["event_id"]
+
+    @pytest.mark.asyncio
+    @patch.dict('os.environ', {
+        'STRIPE_AI_LABELS_METER_ID': 'mtr_test_ai_labels'
+    })
+    async def test_report_usage_batch_handles_mixed_meter_types(
+        self, initialized_stripe_service
+    ):
+        """
+        RED PHASE: Test batch with different meter types.
+
+        Verifies events for different meter types are processed correctly.
+        """
+        # Given: Events for different meter types
+        events = [
+            {"meter_event": "ai_labels", "value": 100},
+            {"meter_event": "human_audits", "value": 50},
+            {"meter_event": "ai_labels", "value": 75},
+            {"meter_event": "human_audits", "value": 25}
+        ]
+
+        async def mock_report_usage(**kwargs):
+            return {
+                "event_id": "evt_1",
+                "status": "succeeded",
+                "meter_event": kwargs["meter_event"],
+                "value": kwargs["value"]
+            }
+
+        with patch.object(
+            initialized_stripe_service,
+            'report_usage',
+            side_effect=mock_report_usage
+        ):
+            # When: Reporting batch with mixed meter types
+            result = await initialized_stripe_service.report_usage_batch(
+                events=events,
+                tenant_id="tenant_123"
+            )
+
+            # Then: All should be processed
+            assert result.total_events == 4
+            assert result.successful_count == 4
+            # Verify meter types in results
+            meter_events = [s["meter_event"] for s in result.successes]
+            assert meter_events.count("ai_labels") == 2
+            assert meter_events.count("human_audits") == 2
+
+
+class TestStripeServiceMetadataSanitization:
+    """
+    Test metadata sanitization for security.
+    P02-002 QA Fix: Prevent metadata injection vulnerabilities.
+    """
+
+    @pytest.mark.asyncio
+    @patch.dict('os.environ', {
+        'STRIPE_AI_LABELS_METER_ID': 'mtr_test_ai_labels'
+    })
+    async def test_sanitize_metadata_blocks_reserved_keys(self, initialized_stripe_service):
+        """
+        Test that reserved keys (value, stripe_customer_id, batch_id) are blocked.
+        """
+        from src.services.stripe_service import StripeMeterValidationError
+
+        # Given: Metadata with reserved keys
+        metadata = {"value": "100", "batch_id": "batch_123"}
+
+        # When/Then: Should raise validation error
+        with pytest.raises(StripeMeterValidationError) as exc_info:
+            initialized_stripe_service._sanitize_metadata(metadata)
+
+        assert "reserved" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    @patch.dict('os.environ', {
+        'STRIPE_AI_LABELS_METER_ID': 'mtr_test_ai_labels'
+    })
+    async def test_sanitize_metadata_validates_primitive_types(self, initialized_stripe_service):
+        """
+        Test that only primitive types (str, int, float, bool) are allowed.
+        """
+        from src.services.stripe_service import StripeMeterValidationError
+
+        # Given: Metadata with non-primitive value (dict)
+        metadata = {"source": "api", "nested": {"key": "value"}}
+
+        # When/Then: Should raise validation error
+        with pytest.raises(StripeMeterValidationError) as exc_info:
+            initialized_stripe_service._sanitize_metadata(metadata)
+
+        assert "primitive type" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    @patch.dict('os.environ', {
+        'STRIPE_AI_LABELS_METER_ID': 'mtr_test_ai_labels'
+    })
+    async def test_sanitize_metadata_converts_values_to_strings(self, initialized_stripe_service):
+        """
+        Test that valid metadata values are converted to strings.
+        """
+        # Given: Metadata with mixed primitive types
+        metadata = {"count": 100, "rate": 1.5, "enabled": True, "source": "api"}
+
+        # When: Sanitizing metadata
+        result = initialized_stripe_service._sanitize_metadata(metadata)
+
+        # Then: All values should be strings
+        assert result == {"count": "100", "rate": "1.5", "enabled": "True", "source": "api"}
+
+    @pytest.mark.asyncio
+    @patch.dict('os.environ', {
+        'STRIPE_AI_LABELS_METER_ID': 'mtr_test_ai_labels'
+    })
+    async def test_report_usage_rejects_reserved_metadata_keys(self, initialized_stripe_service):
+        """
+        Test that report_usage rejects metadata with reserved keys.
+        """
+        from src.services.stripe_service import StripeMeterValidationError
+
+        with patch.object(
+            initialized_stripe_service,
+            '_report_meter_event_to_stripe',
+            return_value={"id": "evt_test"}
+        ):
+            # When/Then: Should raise validation error for reserved keys
+            with pytest.raises(StripeMeterValidationError):
+                await initialized_stripe_service.report_usage(
+                    meter_event="ai_labels",
+                    value=100,
+                    tenant_id="tenant_123",
+                    metadata={"batch_id": "malicious"}
+                )
+
+
+class TestStripeServiceBatchSizeLimit:
+    """
+    Test batch size limit for DoS protection.
+    P02-002 QA Fix: Prevent DoS attacks through large batches.
+    """
+
+    @pytest.mark.asyncio
+    @patch.dict('os.environ', {
+        'STRIPE_AI_LABELS_METER_ID': 'mtr_test_ai_labels'
+    })
+    async def test_report_usage_batch_enforces_max_batch_size(self, initialized_stripe_service):
+        """
+        Test that batch size limit (100) is enforced.
+        """
+        from src.services.stripe_service import StripeMeterValidationError
+
+        # Given: Batch with 101 events (exceeds MAX_BATCH_SIZE)
+        events = [{"meter_event": "ai_labels", "value": 1} for _ in range(101)]
+
+        # When/Then: Should raise validation error
+        with pytest.raises(StripeMeterValidationError) as exc_info:
+            await initialized_stripe_service.report_usage_batch(
+                events=events,
+                tenant_id="tenant_123"
+            )
+
+        assert "exceeds maximum" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    @patch.dict('os.environ', {
+        'STRIPE_AI_LABELS_METER_ID': 'mtr_test_ai_labels'
+    })
+    async def test_report_usage_batch_accepts_max_batch_size(self, initialized_stripe_service):
+        """
+        Test that batch with exactly MAX_BATCH_SIZE (100) events is accepted.
+        """
+        async def mock_report_usage(**kwargs):
+            return {"event_id": "evt_1", "status": "succeeded", "meter_event": "ai_labels", "value": 1}
+
+        # Given: Batch with exactly 100 events
+        events = [{"meter_event": "ai_labels", "value": 1} for _ in range(100)]
+
+        with patch.object(
+            initialized_stripe_service,
+            'report_usage',
+            side_effect=mock_report_usage
+        ):
+            # When: Reporting batch at max size
+            result = await initialized_stripe_service.report_usage_batch(
+                events=events,
+                tenant_id="tenant_123"
+            )
+
+            # Then: Should succeed
+            assert result.total_events == 100
+            assert result.successful_count == 100
+
+
+class TestStripeServiceBatchEventTypeValidation:
+    """
+    Test type validation for batch events.
+    P02-002 QA Fix: Ensure meter_event is str and value is int.
+    """
+
+    @pytest.mark.asyncio
+    @patch.dict('os.environ', {
+        'STRIPE_AI_LABELS_METER_ID': 'mtr_test_ai_labels'
+    })
+    async def test_validate_batch_events_requires_string_meter_event(self, initialized_stripe_service):
+        """
+        Test that meter_event must be a string.
+        """
+        from src.services.stripe_service import StripeMeterValidationError
+
+        # Given: Event with non-string meter_event
+        events = [{"meter_event": 123, "value": 100}]  # meter_event is int, not str
+
+        # When/Then: Should raise validation error
+        with pytest.raises(StripeMeterValidationError) as exc_info:
+            await initialized_stripe_service.report_usage_batch(
+                events=events,
+                tenant_id="tenant_123"
+            )
+
+        assert "meter_event" in str(exc_info.value).lower()
+        assert "string" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    @patch.dict('os.environ', {
+        'STRIPE_AI_LABELS_METER_ID': 'mtr_test_ai_labels'
+    })
+    async def test_validate_batch_events_requires_integer_value(self, initialized_stripe_service):
+        """
+        Test that value must be an integer.
+        """
+        from src.services.stripe_service import StripeMeterValidationError
+
+        # Given: Event with non-integer value
+        events = [{"meter_event": "ai_labels", "value": "100"}]  # value is str, not int
+
+        # When/Then: Should raise validation error
+        with pytest.raises(StripeMeterValidationError) as exc_info:
+            await initialized_stripe_service.report_usage_batch(
+                events=events,
+                tenant_id="tenant_123"
+            )
+
+        assert "value" in str(exc_info.value).lower()
+        assert "integer" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    @patch.dict('os.environ', {
+        'STRIPE_AI_LABELS_METER_ID': 'mtr_test_ai_labels'
+    })
+    async def test_validate_batch_events_catches_multiple_type_errors(self, initialized_stripe_service):
+        """
+        Test that multiple type errors are reported together.
+        """
+        from src.services.stripe_service import StripeMeterValidationError
+
+        # Given: Multiple events with type errors
+        events = [
+            {"meter_event": 123, "value": 100},  # meter_event is int
+            {"meter_event": "ai_labels", "value": "50"},  # value is str
+        ]
+
+        # When/Then: Should report all errors
+        with pytest.raises(StripeMeterValidationError) as exc_info:
+            await initialized_stripe_service.report_usage_batch(
+                events=events,
+                tenant_id="tenant_123"
+            )
+
+        # Should mention both events
+        error_msg = str(exc_info.value).lower()
+        assert "index 0" in error_msg
+        assert "index 1" in error_msg

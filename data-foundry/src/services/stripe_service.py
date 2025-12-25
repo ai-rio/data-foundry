@@ -4,12 +4,14 @@ StripeService - Stripe billing operations for Data Foundry.
 This service provides Stripe customer management operations including:
 - Customer CRUD operations (create, read, update, delete)
 - Meter event reporting for usage-based billing
+- Batch meter event reporting for high-volume scenarios
 - Metadata mapping between tenant_id and Stripe customer
 - Stripe API integration with proper error handling
 - Database persistence for Stripe customer records
 
 P1-002: StripeService base with Customer CRUD operations
 P02-001: Meter event reporting for usage-based billing
+P02-002: Batch meter event reporting support
 
 Security Features:
 - API key management via SecretManager
@@ -25,7 +27,8 @@ Meter Types:
 import logging
 import os
 from typing import Dict, Optional, Any, List
-from datetime import datetime
+from datetime import datetime, timezone
+from dataclasses import dataclass, field
 import uuid
 
 import stripe
@@ -39,6 +42,51 @@ from src.models.stripe_billing import StripeCustomer, StripeMeterEvent, StripeMe
 
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Exception Classes
+# ============================================================================
+
+
+# ============================================================================
+# Batch Result Data Class
+# ============================================================================
+
+@dataclass
+class BatchResult:
+    """
+    Result of a batch meter event reporting operation.
+
+    Tracks the outcome of processing multiple meter events in a single batch.
+    Provides detailed information about successful and failed events.
+
+    Attributes:
+        batch_id: Unique identifier for this batch operation
+        total_events: Total number of events in the batch
+        successful_count: Number of events that succeeded
+        failed_count: Number of events that failed
+        successes: List of successful event results
+        failures: List of failed event results with error details
+
+    Example:
+        >>> result = BatchResult(
+        ...     batch_id="batch_20250125_1234",
+        ...     total_events=5,
+        ...     successful_count=4,
+        ...     failed_count=1,
+        ...     successes=[...],
+        ...     failures=[...]
+        ... )
+        >>> print(f"Processed {result.successful_count}/{result.total_events}")
+    """
+
+    batch_id: str
+    total_events: int
+    successful_count: int
+    failed_count: int
+    successes: List[Dict[str, Any]] = field(default_factory=list)
+    failures: List[Dict[str, Any]] = field(default_factory=list)
 
 
 # ============================================================================
@@ -175,6 +223,12 @@ class StripeService:
     METER_AI_LABELS = "ai_labels"
     METER_HUMAN_AUDITS = "human_audits"
 
+    # Maximum batch size to prevent DoS attacks
+    MAX_BATCH_SIZE = 100
+
+    # Reserved metadata keys that cannot be set by users
+    RESERVED_METADATA_KEYS = {"value", "stripe_customer_id", "batch_id"}
+
     def __init__(self):
         """
         Initialize StripeService.
@@ -290,7 +344,7 @@ class StripeService:
                 "metadata": {
                     "tenant_id": tenant.tenant_id,
                     "tenant_name": tenant.name,
-                    "created_at": datetime.utcnow().isoformat()
+                    "created_at": datetime.now(timezone.utc).isoformat()
                 }
             }
 
@@ -449,7 +503,7 @@ class StripeService:
                         db_customer.email = email
                     if name:
                         db_customer.name = name
-                    db_customer.updated_at = datetime.utcnow()
+                    db_customer.updated_at = datetime.now(timezone.utc)
                     await db_session.commit()
                     logger.info(f"Synced customer update to database")
 
@@ -539,7 +593,8 @@ class StripeService:
         tenant_id: str,
         metadata: Optional[Dict[str, str]] = None,
         stripe_customer_id: Optional[str] = None,
-        db_session: Optional[AsyncSession] = None
+        db_session: Optional[AsyncSession] = None,
+        batch_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Report meter event usage to Stripe for billing.
@@ -554,6 +609,7 @@ class StripeService:
             metadata: Optional metadata dictionary for the event
             stripe_customer_id: Optional Stripe customer ID for validation
             db_session: Optional database session for persisting event record
+            batch_id: Optional batch identifier for batch operations (internal use only)
 
         Returns:
             Dictionary with Stripe API response including:
@@ -571,7 +627,7 @@ class StripeService:
             ...     meter_event="ai_labels",
             ...     value=100,
             ...     tenant_id="tenant_123",
-            ...     metadata={"batch_id": "batch_001"}
+            ...     metadata={"source": "api"}
             ... )
         """
         self._ensure_initialized()
@@ -607,9 +663,10 @@ class StripeService:
             "idempotency_key": idempotency_key,
         }
 
-        # Add metadata if provided
+        # Sanitize metadata if provided
+        sanitized_metadata = None
         if metadata:
-            event_data["payload"]["metadata"] = metadata
+            sanitized_metadata = self._sanitize_metadata(metadata)
 
         # Track event in database if session provided
         db_event = None
@@ -643,7 +700,8 @@ class StripeService:
                 value=value,
                 idempotency_key=idempotency_key,
                 customer_id=stripe_customer_id,
-                metadata=metadata
+                metadata=sanitized_metadata,
+                batch_id=batch_id
             )
 
             # Update database record if provided
@@ -691,6 +749,62 @@ class StripeService:
                 await db_session.commit()
 
             raise StripeServiceError(f"Failed to report meter event: {e}") from e
+
+    def _sanitize_metadata(self, metadata: Dict[str, Any]) -> Dict[str, str]:
+        """
+        Sanitize metadata to prevent injection attacks.
+
+        Validates that metadata keys are strings and values are primitive types.
+        Blocks reserved keys to prevent overwriting critical fields.
+
+        Args:
+            metadata: Metadata dictionary to sanitize
+
+        Returns:
+            Sanitized metadata dictionary with string values
+
+        Raises:
+            StripeMeterValidationError: If metadata contains invalid types or reserved keys
+        """
+        if not isinstance(metadata, dict):
+            raise StripeMeterValidationError(
+                f"Metadata must be a dictionary, got {type(metadata).__name__}"
+            )
+
+        sanitized = {}
+        validation_errors = []
+
+        for key, value in metadata.items():
+            # Validate key is a string
+            if not isinstance(key, str):
+                validation_errors.append(
+                    f"Metadata key '{key}' must be a string, got {type(key).__name__}"
+                )
+                continue
+
+            # Check for reserved keys
+            if key in self.RESERVED_METADATA_KEYS:
+                validation_errors.append(
+                    f"Metadata key '{key}' is reserved and cannot be set"
+                )
+                continue
+
+            # Validate value is a primitive type that can be converted to string
+            if isinstance(value, (str, int, float, bool)):
+                sanitized[key] = str(value)
+            else:
+                validation_errors.append(
+                    f"Metadata value for key '{key}' must be a primitive type "
+                    f"(str, int, float, bool), got {type(value).__name__}"
+                )
+
+        if validation_errors:
+            raise StripeMeterValidationError(
+                f"Metadata validation failed: {'; '.join(validation_errors)}",
+                validation_errors=validation_errors
+            )
+
+        return sanitized
 
     def _validate_meter_event(self, meter_event: str, value: int) -> List[str]:
         """
@@ -741,7 +855,7 @@ class StripeService:
         Returns:
             Unique idempotency key string
         """
-        timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
         unique_suffix = uuid.uuid4().hex[:8]
         return f"{tenant_id}_{meter_event}_{value}_{timestamp}_{unique_suffix}"
 
@@ -752,7 +866,8 @@ class StripeService:
         value: int,
         idempotency_key: str,
         customer_id: Optional[str] = None,
-        metadata: Optional[Dict[str, str]] = None
+        metadata: Optional[Dict[str, str]] = None,
+        batch_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Report meter event to Stripe v2 billing API.
@@ -766,7 +881,8 @@ class StripeService:
             value: The event value/quantity
             idempotency_key: Unique idempotency key
             customer_id: Optional Stripe customer ID
-            metadata: Optional metadata
+            metadata: Optional sanitized metadata
+            batch_id: Optional batch identifier (internal use)
 
         Returns:
             Stripe API response as dictionary
@@ -785,6 +901,9 @@ class StripeService:
 
         if customer_id:
             payload["stripe_customer_id"] = customer_id
+
+        if batch_id:
+            payload["batch_id"] = batch_id
 
         if metadata:
             payload.update(metadata)
@@ -834,3 +953,220 @@ class StripeService:
             "metadata": dict(stripe_customer.get("metadata", {})),
             "created": stripe_customer.get("created")
         }
+
+    async def report_usage_batch(
+        self,
+        events: List[Dict[str, Any]],
+        tenant_id: str,
+        stripe_customer_id: Optional[str] = None,
+        db_session: Optional[AsyncSession] = None
+    ) -> BatchResult:
+        """
+        Report multiple meter events to Stripe in a single batch.
+
+        Processes multiple meter events, handling partial failures gracefully.
+        Each event is processed sequentially, with results aggregated into
+        a BatchResult object containing successes and failures.
+
+        Args:
+            events: List of event dictionaries, each containing:
+                - meter_event (str): The meter event name (e.g., "ai_labels")
+                - value (int): The quantity/value to report
+                - metadata (dict, optional): Additional event metadata
+            tenant_id: Tenant identifier for tracking
+            stripe_customer_id: Optional Stripe customer ID for all events
+            db_session: Optional database session for persisting event records
+
+        Returns:
+            BatchResult object containing:
+            - batch_id: Unique batch identifier
+            - total_events: Total number of events processed
+            - successful_count: Number of successful events
+            - failed_count: Number of failed events
+            - successes: List of successful event results
+            - failures: List of failed event results with error details
+
+        Raises:
+            StripeServiceError: If service not initialized
+            StripeMeterValidationError: If event structure validation fails
+
+        Example:
+            >>> events = [
+            ...     {"meter_event": "ai_labels", "value": 100, "metadata": {"source": "api"}},
+            ...     {"meter_event": "human_audits", "value": 50}
+            ... ]
+            >>> result = await service.report_usage_batch(
+            ...     events=events,
+            ...     tenant_id="tenant_123",
+            ...     stripe_customer_id="cus_abc123"
+            ... )
+            >>> print(f"Success: {result.successful_count}, Failed: {result.failed_count}")
+        """
+        self._ensure_initialized()
+
+        # Generate batch ID
+        batch_id = self._generate_batch_id(tenant_id)
+
+        # Initialize batch result
+        result = BatchResult(
+            batch_id=batch_id,
+            total_events=len(events),
+            successful_count=0,
+            failed_count=0,
+            successes=[],
+            failures=[]
+        )
+
+        # Handle empty batch
+        if not events:
+            logger.info(f"Empty batch received for tenant {tenant_id}")
+            return result
+
+        # Validate batch size to prevent DoS attacks
+        if len(events) > self.MAX_BATCH_SIZE:
+            raise StripeMeterValidationError(
+                f"Batch size exceeds maximum allowed size of {self.MAX_BATCH_SIZE}. "
+                f"Got {len(events)} events."
+            )
+
+        # Validate event structure upfront
+        self._validate_batch_events(events)
+
+        # Process each event sequentially
+        for event_data in events:
+            meter_event = event_data["meter_event"]
+            value = event_data["value"]
+            event_metadata = event_data.get("metadata", {})
+
+            try:
+                # Call report_usage for this event
+                # Pass batch_id separately to avoid metadata sanitization issues
+                event_result = await self.report_usage(
+                    meter_event=meter_event,
+                    value=value,
+                    tenant_id=tenant_id,
+                    metadata=event_metadata,
+                    stripe_customer_id=stripe_customer_id,
+                    db_session=db_session,
+                    batch_id=batch_id
+                )
+
+                # Track success
+                result.successes.append(event_result)
+                result.successful_count += 1
+
+            except (StripeMeterValidationError, StripeAPIError, StripeServiceError) as e:
+                # Track failure with details
+                failure_info = {
+                    "event": {
+                        "meter_event": meter_event,
+                        "value": value,
+                        "metadata": event_metadata
+                    },
+                    "error": str(e),
+                    "error_type": type(e).__name__
+                }
+
+                # Add specific error details if available
+                if hasattr(e, 'validation_errors') and e.validation_errors:
+                    failure_info["validation_errors"] = e.validation_errors
+                if hasattr(e, 'meter_event'):
+                    failure_info["meter_event"] = e.meter_event
+
+                result.failures.append(failure_info)
+                result.failed_count += 1
+
+                logger.warning(
+                    f"Event failed in batch {batch_id}: {meter_event}={value} - {str(e)}"
+                )
+
+            except Exception as e:
+                # Catch unexpected errors
+                failure_info = {
+                    "event": {
+                        "meter_event": meter_event,
+                        "value": value,
+                        "metadata": event_metadata
+                    },
+                    "error": f"Unexpected error: {str(e)}",
+                    "error_type": "UnexpectedError"
+                }
+                result.failures.append(failure_info)
+                result.failed_count += 1
+
+                logger.error(
+                    f"Unexpected error processing event in batch {batch_id}: "
+                    f"{meter_event}={value} - {str(e)}"
+                )
+
+        # Log batch summary
+        logger.info(
+            f"Batch {batch_id} completed: "
+            f"{result.successful_count}/{result.total_events} succeeded, "
+            f"{result.failed_count} failed"
+        )
+
+        return result
+
+    def _validate_batch_events(self, events: List[Dict[str, Any]]) -> None:
+        """
+        Validate event structure for all events in batch.
+
+        Ensures all events have required fields (meter_event, value) with
+        correct types. Raises StripeMeterValidationError if any event is malformed.
+
+        Args:
+            events: List of event dictionaries to validate
+
+        Raises:
+            StripeMeterValidationError: If any event is missing required fields or has invalid types
+        """
+        validation_errors = []
+
+        for i, event in enumerate(events):
+            # Check for required fields
+            if "meter_event" not in event:
+                validation_errors.append(
+                    f"Event at index {i}: Missing required field 'meter_event'"
+                )
+            else:
+                # Validate meter_event is a string
+                if not isinstance(event["meter_event"], str):
+                    validation_errors.append(
+                        f"Event at index {i}: 'meter_event' must be a string, "
+                        f"got {type(event['meter_event']).__name__}"
+                    )
+
+            if "value" not in event:
+                validation_errors.append(
+                    f"Event at index {i}: Missing required field 'value'"
+                )
+            else:
+                # Validate value is an integer
+                if not isinstance(event["value"], int):
+                    validation_errors.append(
+                        f"Event at index {i}: 'value' must be an integer, "
+                        f"got {type(event['value']).__name__}"
+                    )
+
+        if validation_errors:
+            raise StripeMeterValidationError(
+                f"Batch event validation failed: {'; '.join(validation_errors)}",
+                validation_errors=validation_errors
+            )
+
+    def _generate_batch_id(self, tenant_id: str) -> str:
+        """
+        Generate unique batch ID for tracking batch operations.
+
+        Combines tenant_id, timestamp, and UUID to ensure uniqueness.
+
+        Args:
+            tenant_id: Tenant identifier
+
+        Returns:
+            Unique batch ID string
+        """
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        unique_suffix = uuid.uuid4().hex[:8]
+        return f"batch_{tenant_id}_{timestamp}_{unique_suffix}"
