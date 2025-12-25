@@ -864,16 +864,22 @@ async def test_stripe_metered_billing():
 
 ## 10. Open Questions / Decisions Needed
 
-| ID | Question | Impact | Priority |
-|----|----------|--------|----------|
-| OQ-001 | Should meter events be reported in real-time or batched? | Architecture | High |
-| OQ-002 | How to handle usage reporting when Stripe API is down? | Reliability | High |
-| OQ-003 | Should we use Stripe's meter event stream v2 or legacy usage records? | Technology | High |
-| OQ-004 | How to handle existing tenants without Stripe customers? | Migration | Medium |
-| OQ-005 | Should platform fee be separate invoice or combined line item? | Billing | Medium |
-| OQ-006 | Do we need to support multiple payment methods per customer? | UX | Low |
-| OQ-007 | Should invoices be paid automatically (charge_automatically) or send_invoice? | Cash flow | High |
-| OQ-008 | How to handle proration when changing tiers mid-cycle? | Billing | Medium |
+### 10.1 Resolved Decisions
+
+| ID | Question | Decision | Rationale |
+|----|----------|----------|-----------|
+| OQ-001 | Should meter events be reported in real-time or batched? | **Batched** | More efficient API usage, reduces rate limit pressure, aligns with existing batch processing workflow |
+| OQ-002 | How to handle usage reporting when Stripe API is down? | **Offline retry queue** | Failed events queued with exponential backoff retry (1s, 2s, 4s, 8s, 16s), max 5 attempts before manual intervention |
+| OQ-003 | Should we use Stripe's meter event stream v2 or legacy usage records? | **Meter event stream v2** | Modern Stripe billing API, better meter support, future-proof, legacy usage records deprecated |
+| OQ-004 | How to handle existing tenants without Stripe customers? | **N/A** | No existing tenants - greenfield deployment |
+| OQ-005 | Should platform fee be separate invoice or combined line item? | **Combined line item** | Single invoice with platform fee + metered usage items, simpler customer experience |
+| OQ-006 | Do we need to support multiple payment methods per customer? | **Yes** | Support multiple cards with primary + backup fallback if primary payment fails |
+| OQ-007 | Should invoices be paid automatically (charge_automatically) or send_invoice? | **Charge Automatically** | Faster payment collection, better cash flow, standard for SaaS billing |
+| OQ-008 | How to handle proration when changing tiers mid-cycle? | **Prorate now** | Charge difference immediately, update billing for rest of cycle, transparent to customer |
+
+### 10.2 Pending Decisions
+
+All open questions have been resolved. ✅
 
 ---
 
