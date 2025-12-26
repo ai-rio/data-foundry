@@ -2,7 +2,7 @@
 Stripe service module.
 
 This package contains the modular Stripe service implementation with separate
-concerns for customers, meter events, idempotency, retries, validation, and
+concerns for customers, subscriptions, meter events, idempotency, retries, validation, and
 batch processing.
 
 Public API:
@@ -13,12 +13,9 @@ Public API:
 - Protocols: Protocol classes for dependency injection and testing
 - Exceptions: Complete exception hierarchy for error handling
 
-Phase: 2.5.4 (Integration Layer)
-Task: 2.5.4.2 - Update __init__.py with public API exports
+Phase: 3 (Subscription Service)
+Task: P3-001 (Subscription Creation)
 """
-
-# Version info
-__version__ = "2.5.4"
 
 # ============================================================================
 # Base class exports
@@ -40,6 +37,7 @@ from .validation import ValidationService
 from .retry_service import RetryService
 from .idempotency_service import IdempotencyService
 from .customer_service import CustomerService
+from .subscription_service import SubscriptionService
 from .meter_event_service import MeterEventService
 from .batch_processor import BatchProcessor
 
@@ -50,10 +48,13 @@ from .batch_processor import BatchProcessor
 from .types import (
     # Enums
     MeterType,
+    SubscriptionTier,
+    PriceType,
     EventStatus,
     RetryCategory,
     # TypedDicts
     CustomerData,
+    SubscriptionData,
     MeterEventData,
     MeterEventResult,
     RetryConfig,
@@ -71,6 +72,7 @@ from .types import (
     MeterEventServiceProtocol,
     BatchProcessorProtocol,
     CustomerServiceProtocol,
+    SubscriptionServiceProtocol,
 )
 
 # ============================================================================
@@ -113,16 +115,20 @@ __all__ = [
     "RetryService",
     "IdempotencyService",
     "CustomerService",
+    "SubscriptionService",
     "MeterEventService",
     "BatchProcessor",
 
     # ===== Enums =====
     "MeterType",
+    "SubscriptionTier",
+    "PriceType",
     "EventStatus",
     "RetryCategory",
 
     # ===== TypedDicts =====
     "CustomerData",
+    "SubscriptionData",
     "MeterEventData",
     "MeterEventResult",
     "RetryConfig",
@@ -142,6 +148,7 @@ __all__ = [
     "MeterEventServiceProtocol",
     "BatchProcessorProtocol",
     "CustomerServiceProtocol",
+    "SubscriptionServiceProtocol",
 
     # ===== Exceptions =====
     # Base exception

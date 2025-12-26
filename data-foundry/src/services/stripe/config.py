@@ -111,6 +111,17 @@ class StripeConfig:
     # Batch Configuration
     max_batch_size: int = 100
 
+    # Sync Configuration (Phase 3: Subscription Sync)
+    sync_interval_minutes: int = field(
+        default_factory=lambda: int(os.getenv("STRIPE_SYNC_INTERVAL_MINUTES", "60"))
+    )
+    sync_lock_ttl_seconds: int = field(
+        default_factory=lambda: int(os.getenv("STRIPE_SYNC_LOCK_TTL_SECONDS", "300"))
+    )
+    sync_batch_size: int = field(
+        default_factory=lambda: int(os.getenv("STRIPE_SYNC_BATCH_SIZE", "100"))
+    )
+
     # Meter Configuration
     meter_ids: Dict[str, str] = field(default_factory=dict)
 
@@ -223,6 +234,27 @@ class StripeConfig:
         if self.max_idempotency_registry_size < 1:
             errors.append(
                 f"max_idempotency_registry_size must be >= 1, got {self.max_idempotency_registry_size}"
+            )
+
+        # Validate sync configuration
+        if self.sync_interval_minutes < 1:
+            errors.append(
+                f"sync_interval_minutes must be >= 1, got {self.sync_interval_minutes}"
+            )
+
+        if self.sync_lock_ttl_seconds < 1:
+            errors.append(
+                f"sync_lock_ttl_seconds must be >= 1, got {self.sync_lock_ttl_seconds}"
+            )
+
+        if self.sync_batch_size < 1:
+            errors.append(
+                f"sync_batch_size must be >= 1, got {self.sync_batch_size}"
+            )
+
+        if self.sync_batch_size > 1000:
+            errors.append(
+                f"sync_batch_size must be <= 1000, got {self.sync_batch_size}"
             )
 
         # Warn about missing meter IDs (not an error for development)

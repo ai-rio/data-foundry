@@ -655,3 +655,166 @@ class CustomerServiceProtocol(Protocol):
             True if deletion was successful
         """
         ...
+
+
+class SubscriptionSyncServiceProtocol(Protocol):
+    """Protocol for subscription sync operations.
+
+    Defines the interface for synchronizing subscription status between
+    Stripe API and the local database. Supports both periodic polling
+    and webhook-based real-time updates.
+    """
+
+    async def sync_subscription(self, stripe_subscription_id: str) -> Any:
+        """Sync a single subscription from Stripe API to database.
+
+        Args:
+            stripe_subscription_id: Stripe subscription ID (must start with 'sub_')
+
+        Returns:
+            Updated StripeSubscription model instance
+
+        Raises:
+            ValueError: If subscription_id format is invalid
+            StripeAPIError: If Stripe API call fails
+        """
+        ...
+
+    async def sync_all_subscriptions(
+        self,
+        limit: int = 100
+    ) -> Dict[str, Any]:
+        """Sync all subscriptions from Stripe API to database.
+
+        Fetches all subscriptions from Stripe with pagination and updates
+        the local database. Continues on individual failures to maximize
+        data consistency.
+
+        Args:
+            limit: Maximum number of subscriptions to sync per batch
+
+        Returns:
+            Dictionary with sync statistics:
+                - total_synced: Number of subscriptions successfully synced
+                - failed_count: Number of subscriptions that failed to sync
+                - skipped: Whether sync was skipped due to lock
+
+        Raises:
+            StripeAPIError: If unable to fetch subscription list from Stripe
+        """
+        ...
+
+    async def handle_webhook_event(self, event: Dict[str, Any]) -> None:
+        """Handle Stripe webhook event for subscription updates.
+
+        Processes subscription-related webhook events and updates the local
+        database accordingly. Implements idempotency using event ID to
+        prevent duplicate processing.
+
+        Supported event types:
+            - customer.subscription.updated
+            - customer.subscription.deleted
+            - invoice.payment_succeeded
+            - invoice.payment_failed
+
+        Args:
+            event: Stripe webhook event payload
+
+        Raises:
+            ValueError: If event structure is invalid or event ID is missing
+        """
+        ...
+
+    def create_celery_task(self) -> Callable:
+        """Create a Celery-compatible background task for subscription sync.
+
+        Returns a callable task function that can be registered with Celery
+        for periodic execution. The task implements lock mechanism to prevent
+        concurrent sync operations.
+
+        Returns:
+            Callable task function for Celery registration
+
+        Example:
+            >>> @celery_app.task
+            ... def sync_subscriptions():
+            ...     return sync_service.create_celery_task()()
+        """
+        ...
+
+
+class SubscriptionData(TypedDict, total=False):
+    """Subscription data structure for Stripe operations.
+
+    Used for transferring subscription information between service layers
+    and for API responses. All fields are optional to support partial updates.
+
+    Task: P3-001 (Subscription Creation)
+    """
+    tenant_id: str
+    stripe_subscription_id: str
+    stripe_customer_id: str
+    status: str
+    current_period_start: Optional[str]
+    current_period_end: Optional[str]
+    tier: Optional[str]
+    cancel_at_period_end: bool
+    created_at: Optional[str]
+    updated_at: Optional[str]
+
+
+@runtime_checkable
+class SubscriptionServiceProtocol(Protocol):
+    """Protocol for subscription operations.
+
+    Defines the interface for Stripe subscription creation and management
+    with database persistence.
+
+    Task: P3-001 (Subscription Creation)
+    """
+
+    async def initialize(self, api_key: str) -> None:
+        """Initialize service with Stripe API key.
+
+        Args:
+            api_key: Stripe secret API key (sk_test_... or sk_live_...)
+
+        Raises:
+            StripeServiceError: If initialization fails
+        """
+        ...
+
+    async def create_subscription(
+        self,
+        tenant_id: str,
+        stripe_customer_id: str,
+        tier: SubscriptionTier,
+        trial_days: Optional[int] = None
+    ) -> SubscriptionData:
+        """Create a metered subscription for a customer.
+
+        Creates a new Stripe subscription with tier-based pricing,
+        metered billing for usage-based components, and optional trial period.
+
+        Args:
+            tenant_id: Tenant identifier
+            stripe_customer_id: Stripe customer ID (cus_*)
+            tier: Subscription tier (GOLD, SILVER, BRONZE)
+            trial_days: Optional trial period in days
+
+        Returns:
+            SubscriptionData dictionary with subscription information
+
+        Raises:
+            StripeServiceError: If service not initialized or validation fails
+            StripeAPIError: If Stripe API call fails
+
+        Example:
+            >>> subscription = await service.create_subscription(
+            ...     tenant_id="tenant_123",
+            ...     stripe_customer_id="cus_abc123",
+            ...     tier=SubscriptionTier.GOLD,
+            ...     trial_days=14
+            ... )
+        """
+        ...
