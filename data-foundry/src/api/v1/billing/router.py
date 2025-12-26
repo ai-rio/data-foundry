@@ -14,11 +14,13 @@ Best Practices:
 - Returns 200 OK immediately (acknowledgment pattern)
 - Processes events asynchronously (prevents timeouts)
 - Logs all events for monitoring and debugging
+- Uses WebhookEventHandler for event processing (P4-003)
 """
 
 import json
 import logging
 from datetime import datetime, timezone
+from typing import Optional
 
 from fastapi import APIRouter, Request, HTTPException, status
 from fastapi.responses import JSONResponse
@@ -33,6 +35,7 @@ from src.api.v1.billing.contracts import (
     BILLING_API_TAGS,
     BILLING_ENDPOINT_DESCRIPTIONS,
 )
+from src.api.v1.billing.webhook_handlers import WebhookEventHandler
 
 
 # =============================================================================
@@ -70,35 +73,65 @@ def get_webhook_secret() -> str:
 
 
 # =============================================================================
-# Event Handler Router (P4-003 Stub)
+# Event Handler Router (P4-003)
 # =============================================================================
+
+# Global event handler instance (initialized lazily)
+# In production, consider dependency injection
+_event_handler: Optional[WebhookEventHandler] = None
+
+
+def get_event_handler() -> WebhookEventHandler:
+    """
+    Get or create the WebhookEventHandler instance.
+
+    Returns:
+        WebhookEventHandler instance
+
+    Note:
+        Uses singleton pattern for efficiency. The handler is created
+        on first call and reused for subsequent requests.
+    """
+    global _event_handler
+    if _event_handler is None:
+        # Import here to avoid circular imports and allow lazy initialization
+        from src.database.connection import get_db_session
+
+        # Use get_db_session as the session factory
+        _event_handler = WebhookEventHandler(get_db_session)
+        logger.info("WebhookEventHandler initialized")
+    return _event_handler
+
 
 async def route_event_to_handler(event) -> None:
     """
-    Route Stripe event to appropriate handler.
+    Route Stripe event to appropriate handler (P4-003 Implementation).
 
-    This is a STUB for P4-003 implementation.
-    In P4-003, this will route events to specific handlers:
-    - customer.created → CustomerHandler
-    - invoice.paid → InvoiceHandler
-    - customer.subscription.* → SubscriptionHandler
+    This function now uses the WebhookEventHandler to process events.
+    Supports the following event types:
+    - invoice.payment_succeeded: Update payment status
+    - invoice.payment_failed: Trigger retry logic
+    - customer.subscription.created: Sync subscription to database
+    - customer.subscription.updated: Sync subscription status
+    - customer.subscription.deleted: Mark as canceled
 
     Args:
         event: Verified Stripe event object
 
-    Note:
-        Current implementation: Logs event and returns
-        Future implementation (P4-003): Routes to async handlers
+    Example:
+        >>> event = stripe.Event(...)
+        >>> await route_event_to_handler(event)
     """
-    # TODO: Implement event routing in P4-003
-    logger.info(
-        f"[P4-003 STUB] Event received: {event.type} (ID: {event.id}). "
-        f"Handler routing will be implemented in P4-003."
-    )
-
-    # In P4-003, this will become:
-    # handler = EventHandlerFactory.get_handler(event.type)
-    # await handler.process(event)
+    try:
+        handler = get_event_handler()
+        await handler.handle_event(event)
+    except Exception as e:
+        # Log handler errors but don't propagate
+        # Webhook endpoint must return 200
+        logger.error(
+            f"Error in route_event_to_handler: {e}",
+            exc_info=True
+        )
 
 
 # =============================================================================
