@@ -22,7 +22,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Request, HTTPException, status
+from fastapi import APIRouter, Request, HTTPException, status, Depends
 from fastapi.responses import JSONResponse
 
 from src.services.stripe.signature_verification import (
@@ -76,34 +76,27 @@ def get_webhook_secret() -> str:
 # Event Handler Router (P4-003)
 # =============================================================================
 
-# Global event handler instance (initialized lazily)
-# In production, consider dependency injection
-_event_handler: Optional[WebhookEventHandler] = None
-
-
 def get_event_handler() -> WebhookEventHandler:
     """
-    Get or create the WebhookEventHandler instance.
+    Dependency injection function for WebhookEventHandler.
+
+    Creates a new WebhookEventHandler instance for each request using FastAPI's
+    dependency injection system. This replaces the global singleton pattern with
+    proper dependency injection.
 
     Returns:
         WebhookEventHandler instance
 
     Note:
-        Uses singleton pattern for efficiency. The handler is created
-        on first call and reused for subsequent requests.
+        Uses FastAPI's Depends() for proper dependency injection instead of
+        global singleton pattern. Each request gets a fresh handler instance.
     """
-    global _event_handler
-    if _event_handler is None:
-        # Import here to avoid circular imports and allow lazy initialization
-        from src.database.connection import get_db_session
+    from src.database.connection import get_db_session
 
-        # Use get_db_session as the session factory
-        _event_handler = WebhookEventHandler(get_db_session)
-        logger.info("WebhookEventHandler initialized")
-    return _event_handler
+    return WebhookEventHandler(get_db_session)
 
 
-async def route_event_to_handler(event) -> None:
+async def route_event_to_handler(event, event_handler: WebhookEventHandler) -> None:
     """
     Route Stripe event to appropriate handler (P4-003 Implementation).
 
@@ -117,14 +110,15 @@ async def route_event_to_handler(event) -> None:
 
     Args:
         event: Verified Stripe event object
+        event_handler: WebhookEventHandler instance (injected via Depends)
 
     Example:
         >>> event = stripe.Event(...)
-        >>> await route_event_to_handler(event)
+        >>> handler = WebhookEventHandler(get_db_session)
+        >>> await route_event_to_handler(event, handler)
     """
     try:
-        handler = get_event_handler()
-        await handler.handle_event(event)
+        await event_handler.handle_event(event)
     except Exception as e:
         # Log handler errors but don't propagate
         # Webhook endpoint must return 200
@@ -161,7 +155,10 @@ router = APIRouter(
         500: {"description": "Internal server error"},
     }
 )
-async def stripe_webhook(request: Request) -> JSONResponse:
+async def stripe_webhook(
+    request: Request,
+    event_handler: WebhookEventHandler = Depends(get_event_handler)
+) -> JSONResponse:
     """
     Handle Stripe webhook events.
 
@@ -252,11 +249,11 @@ async def stripe_webhook(request: Request) -> JSONResponse:
                 detail="Invalid webhook signature"
             )
 
-        # Step 4: Route event to handler (P4-003 stub)
+        # Step 4: Route event to handler (P4-003 implementation)
         # Note: This is async but we don't await it for quick response
         # In production, this would be a background task
         try:
-            await route_event_to_handler(event)
+            await route_event_to_handler(event, event_handler)
         except Exception as e:
             # Log handler error but still return 200
             # Stripe already received the event, we shouldn't fail

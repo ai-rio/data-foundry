@@ -141,7 +141,10 @@ async def test_webhook_valid_signature_returns_200(
                 # Assert
                 assert response.status_code == status.HTTP_200_OK
                 mock_verifier_instance.verify.assert_called_once()
-                mock_route.assert_called_once_with(mock_event)
+                # route_event_to_handler is now called with event and event_handler
+                assert mock_route.call_count == 1
+                call_args = mock_route.call_args
+                assert call_args[0][0] == mock_event  # First arg is the event
 
 
 # =============================================================================
@@ -312,7 +315,8 @@ async def test_webhook_routes_customer_created_event(
                 await stripe_webhook(mock_request)
 
                 # Assert
-                mock_route.assert_called_once_with(mock_event)
+                # route_event_to_handler is now called with event and event_handler
+                assert mock_route.call_count == 1
                 called_event = mock_route.call_args[0][0]
                 assert called_event.type == "customer.created"
 
@@ -349,7 +353,8 @@ async def test_webhook_routes_invoice_paid_event(
                 await stripe_webhook(mock_request)
 
                 # Assert
-                mock_route.assert_called_once_with(mock_event)
+                # route_event_to_handler is now called with event and event_handler
+                assert mock_route.call_count == 1
                 called_event = mock_route.call_args[0][0]
                 assert called_event.type == "invoice.paid"
 
@@ -386,7 +391,8 @@ async def test_webhook_routes_subscription_deleted_event(
                 await stripe_webhook(mock_request)
 
                 # Assert
-                mock_route.assert_called_once_with(mock_event)
+                # route_event_to_handler is now called with event and event_handler
+                assert mock_route.call_count == 1
                 called_event = mock_route.call_args[0][0]
                 assert called_event.type == "customer.subscription.deleted"
 
@@ -700,4 +706,5 @@ async def test_webhook_routes_to_handler_stub(
                 await stripe_webhook(mock_request)
 
                 # Assert
-                mock_route.assert_called_once_with(mock_event)
+                # route_event_to_handler is now called with event and event_handler
+                assert mock_route.call_count == 1

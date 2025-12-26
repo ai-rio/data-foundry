@@ -23,7 +23,7 @@ Handlers:
 """
 
 import logging
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Optional, Union, Any, Awaitable
 from datetime import datetime, timezone
 
 import stripe
@@ -66,7 +66,7 @@ class WebhookEventHandler:
         >>> await handler.handle_event(stripe_event)
     """
 
-    def __init__(self, db_session_factory):
+    def __init__(self, db_session_factory: Callable[[], Awaitable[AsyncSession]]) -> None:
         """
         Initialize WebhookEventHandler.
 
@@ -248,8 +248,14 @@ class WebhookEventHandler:
                 )
                 return
 
-            # Update subscription status
+            # Update subscription status with idempotency check
             old_status = db_subscription.status
+            if old_status == "past_due":
+                logger.info(
+                    f"Subscription {subscription_id} already has status past_due. "
+                    f"Skipping update (idempotency)."
+                )
+                return
             db_subscription.status = "past_due"
             db_subscription.updated_at = datetime.now(timezone.utc)
 
@@ -539,7 +545,7 @@ class WebhookEventHandler:
     # ========================================================================
 
     @staticmethod
-    def _parse_timestamp(ts) -> Optional[datetime]:
+    def _parse_timestamp(ts: Optional[Union[int, float, datetime]]) -> Optional[datetime]:
         """
         Convert timestamp to datetime.
 
@@ -562,7 +568,7 @@ class WebhookEventHandler:
             logger.warning(f"Failed to parse timestamp: {ts}")
             return None
 
-    def _detect_subscription_tier(self, stripe_subscription) -> Optional[str]:
+    def _detect_subscription_tier(self, stripe_subscription: Union[dict, Any]) -> Optional[str]:
         """
         Detect subscription tier from subscription items.
 
