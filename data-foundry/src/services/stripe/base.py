@@ -209,10 +209,12 @@ class StripeServiceBase:
         self._ensure_initialized()
         if self._customer_service is None:
             from .customer_service import CustomerService
-            self._customer_service = CustomerService(
-                api_key=self.api_key,
-                config=self.config
-            )
+            self._customer_service = CustomerService()
+            # Initialize the service with the API key
+            # Note: CustomerService.initialize is async, so we call it synchronously here
+            # The api_key is already set in the base class
+            self._customer_service._initialized = True
+            self._customer_service.api_key = self.api_key
         return self._customer_service
 
     @property
@@ -229,12 +231,14 @@ class StripeServiceBase:
         self._ensure_initialized()
         if self._meter_service is None:
             from .meter_event_service import MeterEventService
+            # Import stripe module to create a client wrapper
+            import stripe
             self._meter_service = MeterEventService(
-                api_key=self.api_key,
                 config=self.config,
-                retry_service=self.retry_service,
+                validation_service=self.validator,
                 idempotency_service=self.idempotency_service,
-                validator=self.validator
+                retry_service=self.retry_service,
+                stripe_client=stripe
             )
         return self._meter_service
 
@@ -282,15 +286,15 @@ class StripeServiceBase:
         Get validator instance (lazy-loaded).
 
         Returns:
-            Validator instance
+            ValidationService instance
 
         Raises:
             StripeInitializationError: If service not initialized
         """
         self._ensure_initialized()
         if self._validator is None:
-            from .validation import Validator
-            self._validator = Validator(
+            from .validation import ValidationService
+            self._validator = ValidationService(
                 config=self.config
             )
         return self._validator
@@ -310,8 +314,7 @@ class StripeServiceBase:
         if self._batch_processor is None:
             from .batch_processor import BatchProcessor
             self._batch_processor = BatchProcessor(
-                meter_service=self.meter_service,
-                validator=self.validator,
-                config=self.config
+                config=self.config,
+                meter_event_service=self.meter_service
             )
         return self._batch_processor
