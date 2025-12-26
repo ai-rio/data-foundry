@@ -16,7 +16,7 @@ Security Considerations:
 - TypedDict structures enforce data validation at type-check level
 """
 
-from typing import Protocol, TypedDict, Optional, Dict, Any, List, Callable, Awaitable
+from typing import Protocol, TypedDict, Optional, Dict, Any, List, Callable, Awaitable, runtime_checkable
 from enum import Enum
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -318,6 +318,7 @@ class SecretManagerProtocol(Protocol):
         ...
 
 
+@runtime_checkable
 class IdempotencyServiceProtocol(Protocol):
     """Protocol for idempotency key operations.
 
