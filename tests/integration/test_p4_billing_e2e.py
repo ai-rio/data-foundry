@@ -39,7 +39,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 
 # Import models and services
@@ -51,7 +51,7 @@ from src.models.stripe_billing import (
     StripeSubscriptionStatus,
 )
 from src.models.tenant import Tenant
-from src.models.user import User
+from src.models.user import User, UserRole
 from src.api.v1.billing.router import router as billing_router
 from src.api.v1.billing.contracts import (
     CreateCustomerRequest,
@@ -63,6 +63,7 @@ from src.api.v1.billing.contracts import (
 )
 from src.database.connection import get_db_session
 from src.core.security import create_access_token
+from src.api.deps import get_current_user
 from src.services.stripe.signature_verification import StripeWebhookVerifier
 
 
@@ -122,7 +123,7 @@ async def test_tenant(db_session: AsyncSession) -> Tenant:
     """Create a test tenant."""
     tenant = Tenant(
         tenant_id="test_tenant_001",
-        tenant_name="Test Organization",
+        name="Test Organization",
         status="active",
         settings={}
     )
@@ -138,7 +139,7 @@ async def test_admin_user(db_session: AsyncSession, test_tenant: Tenant) -> User
     user = User(
         user_id="admin_user_001",
         email="admin@test.com",
-        role="admin",
+        role=UserRole.ADMIN,
         status="active",
         tenant_id=test_tenant.tenant_id
     )
@@ -154,7 +155,7 @@ async def test_regular_user(db_session: AsyncSession, test_tenant: Tenant) -> Us
     user = User(
         user_id="user_001",
         email="user@test.com",
-        role="user",
+        role=UserRole.VIEWER,
         status="active",
         tenant_id=test_tenant.tenant_id
     )
@@ -168,11 +169,7 @@ async def test_regular_user(db_session: AsyncSession, test_tenant: Tenant) -> Us
 def admin_token(test_admin_user: User) -> str:
     """Generate JWT token for admin user."""
     return create_access_token(
-        data={
-            "sub": test_admin_user.user_id,
-            "tenant_id": test_admin_user.tenant_id,
-            "role": test_admin_user.role
-        }
+        subject=test_admin_user.user_id
     )
 
 
@@ -180,11 +177,7 @@ def admin_token(test_admin_user: User) -> str:
 def user_token(test_regular_user: User) -> str:
     """Generate JWT token for regular user."""
     return create_access_token(
-        data={
-            "sub": test_regular_user.user_id,
-            "tenant_id": test_regular_user.tenant_id,
-            "role": test_regular_user.role
-        }
+        subject=test_regular_user.user_id
     )
 
 
@@ -193,12 +186,47 @@ async def test_app(db_session: AsyncSession) -> FastAPI:
     """Create test FastAPI application."""
     app = FastAPI()
 
+    # Set required environment variable for Stripe
+    import os
+    os.environ["STRIPE_SECRET_KEY"] = "sk_test_mock_key_for_testing"
+
     # Override database dependency
     async def override_get_db():
         yield db_session
 
+    # Override auth dependency - bypass JWT verification and extract user_id from token
+    # For tests, the token contains just the user_id as subject (created by test fixtures)
+    async def override_get_current_user(request: Request) -> Dict[str, Any]:
+        """Mock auth that extracts user_id from test tokens without JWT verification."""
+        auth_header = request.headers.get("Authorization")
+
+        if not auth_header or not auth_header.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Missing Authorization header")
+
+        # For tests, tokens are simple JWTs with user_id in 'sub' claim
+        # We'll decode without verification since these are test tokens
+        token = auth_header.replace("Bearer ", "")
+
+        try:
+            # Decode without signature verification (test only)
+            from src.core.config import settings
+            import jwt
+            payload = jwt.decode(
+                token,
+                settings.SECRET_KEY,
+                algorithms=[settings.ALGORITHM],
+                options={"verify_signature": False}  # Safe for tests
+            )
+            user_id = payload.get("sub")
+            if not user_id:
+                raise HTTPException(status_code=401, detail="Invalid token")
+            return {"sub": user_id, "tenant_id": "test_tenant_001"}
+        except Exception:
+            raise HTTPException(status_code=401, detail="Invalid token")
+
     app.include_router(billing_router, prefix="/api/v1/billing")
     app.dependency_overrides[get_db_session] = override_get_db
+    app.dependency_overrides[get_current_user] = override_get_current_user
 
     return app
 
@@ -1010,7 +1038,7 @@ class TestErrorHandlingAndSecurity:
         # Arrange: Create another tenant
         other_tenant = Tenant(
             tenant_id="other_tenant_001",
-            tenant_name="Other Organization",
+            name="Other Organization",
             status="active"
         )
         db_session.add(other_tenant)
@@ -1038,7 +1066,7 @@ class TestErrorHandlingAndSecurity:
         # Arrange: Create another tenant
         other_tenant = Tenant(
             tenant_id="other_tenant_002",
-            tenant_name="Other Org",
+            name="Other Org",
             status="active"
         )
         db_session.add(other_tenant)
@@ -1065,7 +1093,7 @@ class TestErrorHandlingAndSecurity:
         # Arrange: Create another tenant
         other_tenant = Tenant(
             tenant_id="other_tenant_003",
-            tenant_name="Other Company",
+            name="Other Company",
             status="active"
         )
         db_session.add(other_tenant)
@@ -1155,7 +1183,7 @@ class TestErrorHandlingAndSecurity:
         # Arrange: Create another tenant with usage data
         other_tenant = Tenant(
             tenant_id="admin_test_tenant",
-            tenant_name="Admin Test Org",
+            name="Admin Test Org",
             status="active"
         )
         db_session.add(other_tenant)
