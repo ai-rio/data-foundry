@@ -57,7 +57,11 @@ class ValidationService(ValidationServiceProtocol):
     _MAX_COMPONENT_LENGTH = 100
 
     # Shell metacharacters that must be blocked (injection attack prevention)
+    # ORDER MATTERS: More specific patterns must come before general ones
     _DANGEROUS_PATTERNS = [
+        r'`.*?`',          # Backtick command substitution with content (CRITICAL)
+        r'\$\(.*?\)',      # $() command substitution with content (CRITICAL)
+        r'\$\{.*?\}',      # ${} variable expansion with content (CRITICAL)
         r'\.\./',          # Path traversal
         r'\.\.\\',         # Windows path traversal
         r';',              # SQL injection/command separator
@@ -67,6 +71,7 @@ class ValidationService(ValidationServiceProtocol):
         r'<script',        # XSS opening
         r'</script>',      # XSS closing
         r'=',              # Could be used in injection
+        r'\$',             # Standalone dollar sign (variable expansion)
     ]
 
     def __init__(self, config: StripeConfig):
@@ -78,6 +83,8 @@ class ValidationService(ValidationServiceProtocol):
         """
         self.config = config
         self._reserved_keys = config.reserved_metadata_keys
+        # Create lowercase version for case-insensitive comparison (security fix)
+        self._reserved_keys_lower = [rk.lower() for rk in self._reserved_keys]
 
     def validate_meter_event(self, meter_event: str, value: int) -> List[str]:
         """
@@ -163,8 +170,8 @@ class ValidationService(ValidationServiceProtocol):
                 )
                 continue
 
-            # Check for reserved keys
-            if key in self._reserved_keys:
+            # Check for reserved keys (case-insensitive to prevent bypass)
+            if key.lower() in self._reserved_keys_lower:
                 validation_errors.append(
                     f"Metadata key '{key}' is reserved and cannot be set"
                 )
