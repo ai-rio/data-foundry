@@ -857,6 +857,10 @@ class TestRetryLogicIntegration:
         Given: Operation fails and needs retry
         When: Multiple retries occur
         Then: Delays are applied between attempts
+
+        Note: With max_retries=3, the loop runs 4 times (initial + 3 retries).
+        The function succeeds on attempt 3 (index 2), so sleep is called twice
+        (after attempts 0 and 1).
         """
         call_count = [0]
         call_times = []
@@ -864,22 +868,26 @@ class TestRetryLogicIntegration:
         async def delayed_failure():
             call_times.append(time.time())
             call_count[0] += 1
+            # Fail first 2 attempts, succeed on 3rd
             if call_count[0] < 3:
                 error = stripe_lib.error.RateLimitError("Rate limited")
                 error.http_status = 429
                 raise error
             return "success"
 
-        with patch('asyncio.sleep') as mock_sleep:
-            mock_sleep.return_value = asyncio.sleep(0)
+        # Use new_callable=AsyncMock for proper async mocking
+        with patch('asyncio.sleep', new_callable=AsyncMock) as mock_sleep:
 
             await retry_service.execute_with_retry(
                 func=delayed_failure,
                 operation_name="test_operation"
             )
 
-            # Sleep should have been called between attempts
+            # Sleep should have been called twice (after attempt 0 and attempt 1)
+            # Attempt 2 succeeds, so no sleep after it
             assert mock_sleep.call_count == 2
+            # The function was called 3 times total
+            assert call_count[0] == 3
 
     @pytest.mark.asyncio
     async def test_error_classification_transient(self, retry_service):
@@ -931,21 +939,25 @@ class TestStripeAPIEdgeCases:
     @pytest.mark.asyncio
     async def test_empty_meter_event_value(self, meter_event_service):
         """
-        Test handling of edge case with empty meter event value.
+        Test handling of edge case with zero meter event value.
 
         Given: Meter event with value of 0
         When: report_usage is called
-        Then: Event is handled correctly (0 is valid)
-        """
-        # Value 0 should be valid
-        result = await meter_event_service.report_usage(
-            meter_event="ai_labels",
-            value=0,
-            tenant_id="tenant_123"
-        )
+        Then: Validation error is raised (value must be positive)
 
-        assert result["value"] == 0
-        assert result["status"] == "succeeded"
+        Note: Per P02-002 security fix, value must be positive (> 0).
+        Zero and negative values are rejected to prevent invalid meter events.
+        """
+        # Value 0 should trigger validation error (must be positive)
+        with pytest.raises(StripeMeterValidationError) as exc_info:
+            await meter_event_service.report_usage(
+                meter_event="ai_labels",
+                value=0,
+                tenant_id="tenant_123"
+            )
+
+        # Verify the error message mentions the validation requirement
+        assert "positive" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
     async def test_negative_meter_event_value(self, meter_event_service):
@@ -1112,34 +1124,41 @@ class TestStripeAPIEdgeCases:
         When: process_batch is called
         Then: Successes and failures are tracked separately
         """
-        # Make the meter event service fail for specific meter events
-        call_count = [0]
+        # Save the original report_usage method
+        original_report_usage = batch_processor.meter_event_service.report_usage
 
-        original_report = meter_event_service = batch_processor.meter_event_service
+        call_count = [0]
 
         async def conditional_report(**kwargs):
             call_count[0] += 1
-            if call_count[0] % 2 == 0:  # Fail every other call
+            # Fail every other call (2nd event only)
+            if call_count[0] == 2:
                 raise StripeMeterValidationError("Test validation failure")
-            return await original_report.report_usage(**kwargs)
+            # Use original implementation for other events
+            return await original_report_usage(**kwargs)
 
+        # Replace the report_usage method temporarily
         batch_processor.meter_event_service.report_usage = conditional_report
 
-        events = [
-            {"meter_event": "ai_labels", "value": 100},
-            {"meter_event": "ai_labels", "value": 200},
-            {"meter_event": "human_audits", "value": 50},
-        ]
+        try:
+            events = [
+                {"meter_event": "ai_labels", "value": 100},
+                {"meter_event": "ai_labels", "value": 200},
+                {"meter_event": "human_audits", "value": 50},
+            ]
 
-        result = await batch_processor.process_batch(
-            events=events,
-            tenant_id="tenant_123"
-        )
+            result = await batch_processor.process_batch(
+                events=events,
+                tenant_id="tenant_123"
+            )
 
-        # Should have some successes and some failures
-        assert result.total_events == 3
-        assert result.successful_count > 0
-        assert result.failed_count > 0
+            # Should have some successes and some failures
+            assert result.total_events == 3
+            assert result.successful_count > 0
+            assert result.failed_count > 0
+        finally:
+            # Restore original method
+            batch_processor.meter_event_service.report_usage = original_report_usage
 
 
 # ============================================================================
@@ -1259,23 +1278,30 @@ class TestMetadataHandling:
         Test metadata is sanitized before sending to Stripe.
 
         Given: Metadata with reserved keys
-        When: report_usage is called with metadata
-        Then: Reserved keys are removed from metadata
+        When: report_usage is called with metadata containing reserved keys
+        Then: Reserved keys trigger a validation error (security fix - P02-002)
+
+        Note: This test verifies that reserved keys (value, stripe_customer_id, batch_id)
+        are properly blocked to prevent overwriting critical fields. Use custom keys
+        like 'custom_value', 'user_data', 'source' instead.
         """
+        # Reserved keys should trigger validation error
         metadata = {
             "source": "api",
-            "value": "should_be_removed",  # Reserved key
-            "stripe_customer_id": "should_be_removed"  # Reserved key
+            "value": "should_be_removed",  # Reserved key - will cause error
+            "stripe_customer_id": "should_be_removed"  # Reserved key - will cause error
         }
 
-        result = await meter_event_service.report_usage(
-            meter_event="ai_labels",
-            value=100,
-            tenant_id="tenant_123",
-            metadata=metadata
-        )
+        with pytest.raises(StripeMeterValidationError) as exc_info:
+            await meter_event_service.report_usage(
+                meter_event="ai_labels",
+                value=100,
+                tenant_id="tenant_123",
+                metadata=metadata
+            )
 
-        assert result["status"] == "succeeded"
+        # Verify the error mentions the reserved keys
+        assert "reserved" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
     async def test_metadata_preserved_when_valid(self, meter_event_service):
