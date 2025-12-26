@@ -7,11 +7,13 @@ Implements SubscriptionServiceProtocol interface for dependency injection.
 Implements:
 - initialize(): Initialize service with Stripe API credentials
 - create_subscription(): Create metered subscription with tier-based pricing
+- update_subscription_tier(): Update subscription tier with proration
+- cancel_subscription(): Cancel subscription (immediate or period-end)
 - Database persistence to StripeSubscription model
 - Comprehensive error handling and logging
 
 Phase: 3 (Subscription Service)
-Task: P3-001 (Subscription Creation)
+Task: P3-001 (Subscription Creation), P3-002 (Tier Management)
 
 Security Features:
 - Proper error handling with custom exception classes
@@ -40,6 +42,7 @@ from src.services.stripe.types import (
     SubscriptionTier,
     PriceType
 )
+from typing import Any, Union
 from src.services.stripe.exceptions import (
     StripeAPIError,
     StripeServiceError
@@ -128,6 +131,103 @@ class SubscriptionService(SubscriptionServiceProtocol):
             raise StripeServiceError(
                 "SubscriptionService not initialized. Call initialize() before using the service."
             )
+
+    @staticmethod
+    def _validate_subscription_id(subscription_id: str) -> None:
+        """
+        Validate subscription ID format.
+
+        Args:
+            subscription_id: Stripe subscription ID to validate
+
+        Raises:
+            StripeServiceError: If subscription_id format is invalid
+        """
+        if not subscription_id:
+            raise StripeServiceError("Subscription ID cannot be empty")
+
+        if not subscription_id.startswith("sub_"):
+            raise StripeServiceError("Subscription ID must start with 'sub_'")
+
+        if len(subscription_id) < 10:
+            raise StripeServiceError("Subscription ID must be at least 10 characters")
+
+        if len(subscription_id) > 100:
+            raise StripeServiceError("Subscription ID cannot exceed 100 characters")
+
+    async def _verify_tenant_ownership(
+        self,
+        subscription_id: str,
+        requesting_tenant_id: str,
+        db_session: AsyncSession
+    ) -> None:
+        """
+        Verify that the requesting tenant owns the subscription.
+
+        Args:
+            subscription_id: Stripe subscription ID
+            requesting_tenant_id: Tenant ID of the requesting user
+            db_session: Database session for querying
+
+        Raises:
+            StripeServiceError: If subscription not found or tenant doesn't own it
+        """
+        from sqlalchemy import select
+
+        stmt = select(StripeSubscription).where(
+            StripeSubscription.stripe_subscription_id == subscription_id
+        )
+        result = await db_session.execute(stmt)
+        db_subscription = result.scalar_one_or_none()
+
+        if not db_subscription:
+            raise StripeServiceError("Subscription not found")
+
+        if db_subscription.tenant_id != requesting_tenant_id:
+            raise StripeServiceError("Access denied: tenant ownership verification failed")
+
+    @staticmethod
+    def _parse_timestamp(ts):
+        """
+        Convert timestamp to datetime.
+
+        Handles both int/float timestamps and datetime objects.
+
+        Args:
+            ts: Timestamp (int/float) or datetime object
+
+        Returns:
+            datetime object or None if ts is None
+        """
+        if ts is None:
+            return None
+        if isinstance(ts, datetime):
+            return ts
+        # Assume it's a timestamp
+        return datetime.fromtimestamp(ts, tz=timezone.utc)
+
+    @staticmethod
+    def _get_attr(obj: Any, key: str, default: Any = None) -> Any:
+        """
+        Helper to get attribute from both dict and object.
+
+        Args:
+            obj: Object or dict to get attribute from
+            key: Attribute/key name
+            default: Default value if not found
+
+        Returns:
+            Attribute value or default
+        """
+        # For dictionaries, use get() method to avoid conflicts with built-in methods
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+
+        # For objects, use getattr
+        if hasattr(obj, key):
+            return getattr(obj, key)
+
+        return default
 
     def _build_subscription_items(self, tier: SubscriptionTier) -> list:
         """
@@ -270,29 +370,18 @@ class SubscriptionService(SubscriptionServiceProtocol):
             # Persist to database if session provided
             if db_session:
                 try:
-                    # Helper to get attribute from both dict and object
-                    def get_attr(obj, key, default=None):
-                        if hasattr(obj, key):
-                            return getattr(obj, key)
-                        return obj.get(key, default) if isinstance(obj, dict) else default
-
-                    # Helper to convert timestamp to datetime (handles both int/float and datetime objects)
-                    def parse_timestamp(ts):
-                        if ts is None:
-                            return None
-                        if isinstance(ts, datetime):
-                            return ts
-                        # Assume it's a timestamp
-                        return datetime.fromtimestamp(ts, tz=timezone.utc)
-
                     db_subscription = StripeSubscription(
                         tenant_id=tenant_id,
                         stripe_subscription_id=subscription_id,
                         stripe_customer_id=stripe_customer_id,
-                        status=get_attr(stripe_subscription, 'status'),
-                        current_period_start=parse_timestamp(get_attr(stripe_subscription, 'current_period_start')),
-                        current_period_end=parse_timestamp(get_attr(stripe_subscription, 'current_period_end')),
-                        cancel_at_period_end=get_attr(stripe_subscription, 'cancel_at_period_end', False),
+                        status=self._get_attr(stripe_subscription, 'status'),
+                        current_period_start=self._parse_timestamp(
+                            self._get_attr(stripe_subscription, 'current_period_start')
+                        ),
+                        current_period_end=self._parse_timestamp(
+                            self._get_attr(stripe_subscription, 'current_period_end')
+                        ),
+                        cancel_at_period_end=self._get_attr(stripe_subscription, 'cancel_at_period_end', False),
                         tier=tier.value
                     )
                     db_session.add(db_subscription)
@@ -378,3 +467,470 @@ class SubscriptionService(SubscriptionServiceProtocol):
             created_at=datetime.now(timezone.utc).isoformat(),
             updated_at=datetime.now(timezone.utc).isoformat()
         )
+
+    async def update_subscription_tier(
+        self,
+        stripe_subscription_id: str,
+        new_tier: SubscriptionTier,
+        db_session: Optional[AsyncSession] = None,
+        requesting_tenant_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None
+    ) -> SubscriptionData:
+        """
+        Update subscription tier with proration.
+
+        Updates an existing subscription to a new tier with automatic proration
+        for the billing difference. Handles both upgrades and downgrades.
+
+        Args:
+            stripe_subscription_id: Stripe subscription ID (sub_*)
+            new_tier: New subscription tier (GOLD, SILVER, BRONZE)
+            db_session: Optional database session for persistence
+            requesting_tenant_id: Optional tenant ID for ownership verification
+            idempotency_key: Optional idempotency key for duplicate request prevention
+
+        Returns:
+            SubscriptionData dictionary with updated subscription information
+
+        Raises:
+            StripeServiceError: If service not initialized or validation fails
+            StripeAPIError: If Stripe API call fails
+
+        Example:
+            >>> updated = await service.update_subscription_tier(
+            ...     stripe_subscription_id="sub_abc123",
+            ...     new_tier=SubscriptionTier.GOLD,
+            ...     db_session=session,
+            ...     requesting_tenant_id="tenant_123"
+            ... )
+            >>> print(updated['tier'])
+            'gold'
+        """
+        self._ensure_initialized()
+
+        # Validate subscription ID format
+        self._validate_subscription_id(stripe_subscription_id)
+
+        # Verify tenant ownership if db_session and requesting_tenant_id provided
+        if db_session and requesting_tenant_id:
+            await self._verify_tenant_ownership(
+                stripe_subscription_id,
+                requesting_tenant_id,
+                db_session
+            )
+
+        try:
+            # Fetch current subscription from Stripe
+            current_subscription = stripe.Subscription.retrieve(stripe_subscription_id)
+            current_status = self._get_attr(current_subscription, 'status', 'unknown')
+
+            # Validate subscription can be updated
+            if current_status == 'canceled':
+                raise StripeServiceError(
+                    "Cannot update tier for canceled subscription"
+                )
+
+            # Get current subscription items
+            current_items = self._get_attr(current_subscription, 'items', {})
+            current_items_data = self._get_attr(current_items, 'data', [])
+
+            # Build new subscription items for the new tier
+            new_items = self._build_updated_subscription_items(
+                current_items_data,
+                new_tier
+            )
+
+            # Check if tier is actually changing
+            current_tier = self._detect_current_tier(current_items_data)
+            if current_tier == new_tier.value:
+                logger.info(
+                    f"Subscription already on {new_tier.value} tier"
+                )
+                # Get tenant_id from database if available
+                tenant_id = ''
+                if db_session:
+                    from sqlalchemy import select
+                    stmt = select(StripeSubscription).where(
+                        StripeSubscription.stripe_subscription_id == stripe_subscription_id
+                    )
+                    result = await db_session.execute(stmt)
+                    db_sub = result.scalar_one_or_none()
+                    if db_sub:
+                        tenant_id = db_sub.tenant_id
+
+                # Return current subscription data
+                return self._stripe_subscription_to_subscription_data(
+                    current_subscription,
+                    tenant_id,
+                    self._get_attr(current_subscription, 'customer', ''),
+                    new_tier
+                )
+
+            # Update subscription in Stripe with proration
+            logger.info(
+                f"Updating subscription from {current_tier} to {new_tier.value} tier"
+            )
+
+            # Prepare modify parameters
+            modify_params = {
+                "items": new_items,
+                "proration_behavior": "create_prorations"
+            }
+
+            # Add idempotency key if provided
+            if idempotency_key:
+                modify_params["idempotency_key"] = idempotency_key
+
+            updated_subscription = stripe.Subscription.modify(
+                stripe_subscription_id,
+                **modify_params
+            )
+
+            # Get tenant_id from database
+            tenant_id = ''
+            if db_session:
+                try:
+                    # Fetch database record
+                    from sqlalchemy import select
+                    stmt = select(StripeSubscription).where(
+                        StripeSubscription.stripe_subscription_id == stripe_subscription_id
+                    )
+                    result = await db_session.execute(stmt)
+                    db_subscription = result.scalar_one_or_none()
+
+                    if db_subscription:
+                        tenant_id = db_subscription.tenant_id
+
+                        # Update tier
+                        db_subscription.tier = new_tier.value
+                        db_subscription.status = self._get_attr(updated_subscription, 'status', current_status)
+
+                        # Update timestamps using the class method
+                        db_subscription.current_period_start = self._parse_timestamp(
+                            self._get_attr(updated_subscription, 'current_period_start')
+                        )
+                        db_subscription.current_period_end = self._parse_timestamp(
+                            self._get_attr(updated_subscription, 'current_period_end')
+                        )
+
+                        await db_session.commit()
+                        await db_session.refresh(db_subscription)
+                        logger.info(f"Updated subscription tier in database")
+
+                except Exception as db_error:
+                    logger.error(f"Failed to update subscription in database: {db_error}")
+                    # Continue anyway - subscription was updated in Stripe
+
+            # Return updated subscription data
+            return self._stripe_subscription_to_subscription_data(
+                updated_subscription,
+                tenant_id,
+                self._get_attr(current_subscription, 'customer', ''),
+                new_tier
+            )
+
+        except stripe.error.StripeError as e:
+            logger.error(f"Stripe API error updating subscription tier: {e}")
+            raise StripeAPIError(
+                f"Failed to update subscription tier: {str(e)}",
+                stripe_error_type=type(e).__name__,
+                stripe_code=getattr(e, 'code', None)
+            ) from e
+
+        except StripeServiceError:
+            # Re-raise service errors as-is
+            raise
+
+        except Exception as e:
+            logger.error(f"Unexpected error updating subscription tier: {e}")
+            raise StripeServiceError(f"Failed to update subscription tier: {e}") from e
+
+    async def cancel_subscription(
+        self,
+        stripe_subscription_id: str,
+        at_period_end: bool = True,
+        db_session: Optional[AsyncSession] = None,
+        requesting_tenant_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None
+    ) -> SubscriptionData:
+        """
+        Cancel subscription.
+
+        Cancels a subscription either immediately or at the end of the current billing period.
+
+        Args:
+            stripe_subscription_id: Stripe subscription ID (sub_*)
+            at_period_end: If True, cancel at period end; if False, cancel immediately
+            db_session: Optional database session for persistence
+            requesting_tenant_id: Optional tenant ID for ownership verification
+            idempotency_key: Optional idempotency key for duplicate request prevention
+
+        Returns:
+            SubscriptionData dictionary with updated subscription information
+
+        Raises:
+            StripeServiceError: If service not initialized or validation fails
+            StripeAPIError: If Stripe API call fails
+
+        Example:
+            >>> canceled = await service.cancel_subscription(
+            ...     stripe_subscription_id="sub_abc123",
+            ...     at_period_end=True,
+            ...     db_session=session,
+            ...     requesting_tenant_id="tenant_123"
+            ... )
+            >>> print(canceled['status'])
+            'active'  # Still active until period end
+        """
+        self._ensure_initialized()
+
+        # Validate subscription ID format
+        self._validate_subscription_id(stripe_subscription_id)
+
+        # Verify tenant ownership if db_session and requesting_tenant_id provided
+        if db_session and requesting_tenant_id:
+            await self._verify_tenant_ownership(
+                stripe_subscription_id,
+                requesting_tenant_id,
+                db_session
+            )
+
+        try:
+            # Fetch current subscription from Stripe
+            current_subscription = stripe.Subscription.retrieve(stripe_subscription_id)
+            current_status = self._get_attr(current_subscription, 'status', 'unknown')
+
+            # Validate subscription can be canceled
+            if current_status == 'canceled':
+                raise StripeServiceError(
+                    "Subscription is already canceled"
+                )
+
+            # Get tenant_id from database
+            tenant_id = ''
+            if db_session:
+                from sqlalchemy import select
+                stmt = select(StripeSubscription).where(
+                    StripeSubscription.stripe_subscription_id == stripe_subscription_id
+                )
+                result = await db_session.execute(stmt)
+                db_sub = result.scalar_one_or_none()
+                if db_sub:
+                    tenant_id = db_sub.tenant_id
+
+            if at_period_end:
+                # Cancel at period end using modify
+                logger.info(
+                    "Scheduling subscription for cancellation at period end"
+                )
+                modify_params = {"cancel_at_period_end": True}
+                if idempotency_key:
+                    modify_params["idempotency_key"] = idempotency_key
+                updated_subscription = stripe.Subscription.modify(
+                    stripe_subscription_id,
+                    **modify_params
+                )
+            else:
+                # Cancel immediately using delete
+                logger.info("Canceling subscription immediately")
+                delete_params = {}
+                if idempotency_key:
+                    delete_params["idempotency_key"] = idempotency_key
+                updated_subscription = stripe.Subscription.delete(
+                    stripe_subscription_id,
+                    **delete_params
+                )
+
+            # Update database if session provided
+            if db_session:
+                try:
+                    from sqlalchemy import select
+                    stmt = select(StripeSubscription).where(
+                        StripeSubscription.stripe_subscription_id == stripe_subscription_id
+                    )
+                    result = await db_session.execute(stmt)
+                    db_subscription = result.scalar_one_or_none()
+
+                    if db_subscription:
+                        # Update status
+                        db_subscription.status = self._get_attr(updated_subscription, 'status', 'canceled')
+
+                        # Update cancel_at_period_end flag
+                        db_subscription.cancel_at_period_end = self._get_attr(
+                            updated_subscription,
+                            'cancel_at_period_end',
+                            False
+                        )
+
+                        await db_session.commit()
+                        await db_session.refresh(db_subscription)
+                        logger.info(f"Updated subscription status in database")
+
+                except Exception as db_error:
+                    logger.error(f"Failed to update subscription in database: {db_error}")
+                    # Continue anyway - subscription was canceled in Stripe
+
+            # Return updated subscription data
+            # Detect tier from items
+            items = self._get_attr(updated_subscription, 'items', {})
+            items_data = self._get_attr(items, 'data', [])
+            detected_tier_value = self._detect_current_tier(items_data)
+
+            # Convert to SubscriptionTier enum
+            try:
+                detected_tier = SubscriptionTier(detected_tier_value)
+            except ValueError:
+                # Default to BRONZE if detection fails
+                detected_tier = SubscriptionTier.BRONZE
+
+            return self._stripe_subscription_to_subscription_data(
+                updated_subscription,
+                tenant_id,
+                self._get_attr(current_subscription, 'customer', ''),
+                detected_tier
+            )
+
+        except stripe.error.StripeError as e:
+            logger.error(f"Stripe API error canceling subscription: {e}")
+            raise StripeAPIError(
+                f"Failed to cancel subscription: {str(e)}",
+                stripe_error_type=type(e).__name__,
+                stripe_code=getattr(e, 'code', None)
+            ) from e
+
+        except StripeServiceError:
+            # Re-raise service errors as-is
+            raise
+
+        except Exception as e:
+            logger.error(f"Unexpected error canceling subscription: {e}")
+            raise StripeServiceError(f"Failed to cancel subscription: {e}") from e
+
+    def _build_updated_subscription_items(
+        self,
+        current_items: list,
+        new_tier: SubscriptionTier
+    ) -> list:
+        """
+        Build updated subscription items array for tier change.
+
+        Args:
+            current_items: Current subscription items from Stripe
+            new_tier: New tier to update to
+
+        Returns:
+            List of subscription item dictionaries for Stripe API
+
+        Raises:
+            StripeServiceError: If price IDs not configured for new tier
+        """
+        if not self._config:
+            self._config = StripeConfig.from_environment()
+
+        # Get price IDs for the new tier
+        ai_labels_price = self._config.get_price_id(new_tier, PriceType.AI_LABELS)
+        human_audits_price = self._config.get_price_id(new_tier, PriceType.HUMAN_AUDITS)
+        platform_fee_price = self._config.get_price_id(new_tier, PriceType.PLATFORM_FEE)
+
+        # Validate price IDs are configured
+        if not all([ai_labels_price, human_audits_price, platform_fee_price]):
+            missing = []
+            if not ai_labels_price:
+                missing.append(f"{new_tier.value}.ai_labels")
+            if not human_audits_price:
+                missing.append(f"{new_tier.value}.human_audits")
+            if not platform_fee_price:
+                missing.append(f"{new_tier.value}.platform_fee")
+
+            raise StripeServiceError(
+                f"Price IDs not configured for {new_tier.value} tier. "
+                f"Missing: {', '.join(missing)}"
+            )
+
+        # Map price types to current items
+        # We need to update existing items with new price IDs
+        updated_items = []
+
+        for item in current_items:
+            item_id = self._get_attr(item, 'id')
+            price = self._get_attr(item, 'price', {})
+            price_id = self._get_attr(price, 'id', '')
+
+            # Determine price type based on current price ID
+            price_type = self._identify_price_type(price_id)
+
+            # Map to new price ID
+            if price_type == 'ai_labels' and ai_labels_price:
+                updated_items.append({
+                    "id": item_id,
+                    "price": ai_labels_price
+                })
+            elif price_type == 'human_audits' and human_audits_price:
+                updated_items.append({
+                    "id": item_id,
+                    "price": human_audits_price
+                })
+            elif price_type == 'platform_fee' and platform_fee_price:
+                updated_items.append({
+                    "id": item_id,
+                    "price": platform_fee_price,
+                    "quantity": 1
+                })
+
+        logger.debug(
+            f"Built {len(updated_items)} updated subscription items for {new_tier.value} tier"
+        )
+        return updated_items
+
+    def _identify_price_type(self, price_id: str) -> Optional[str]:
+        """
+        Identify price type (ai_labels, human_audits, platform_fee) from price ID.
+
+        Args:
+            price_id: Stripe price ID
+
+        Returns:
+            Price type string or None if not recognized
+        """
+        if not self._config:
+            self._config = StripeConfig.from_environment()
+
+        # Check each tier's price IDs
+        for tier in [SubscriptionTier.GOLD, SubscriptionTier.SILVER, SubscriptionTier.BRONZE]:
+            for price_type in PriceType:
+                tier_price_id = self._config.get_price_id(tier, price_type)
+                if tier_price_id and price_id == tier_price_id:
+                    return price_type.value
+
+        return None
+
+    def _detect_current_tier(self, items_data: list) -> str:
+        """
+        Detect current subscription tier from items.
+
+        Args:
+            items_data: List of subscription items from Stripe
+
+        Returns:
+            Tier value string (gold, silver, bronze)
+        """
+        if not items_data:
+            return "bronze"  # Default to bronze
+
+        if not self._config:
+            self._config = StripeConfig.from_environment()
+
+        # Get first price ID to identify tier
+        for item in items_data:
+            price = self._get_attr(item, 'price', {})
+            price_id = self._get_attr(price, 'id', '')
+
+            if price_id:
+                # Check each tier
+                for tier in [SubscriptionTier.GOLD, SubscriptionTier.SILVER, SubscriptionTier.BRONZE]:
+                    for price_type in PriceType:
+                        tier_price_id = self._config.get_price_id(tier, price_type)
+                        if tier_price_id and price_id == tier_price_id:
+                            return tier.value
+
+        return "bronze"  # Default if detection fails

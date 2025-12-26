@@ -105,6 +105,12 @@ def mock_db_session():
     """Mock database session."""
     session = AsyncMock(spec=AsyncSession)
     session.add = Mock()
+
+    # Mock execute to return a mock result
+    mock_result = AsyncMock()
+    mock_result.scalar_one_or_none = Mock(return_value=None)  # No existing subscription
+    session.execute = AsyncMock(return_value=mock_result)
+
     session.commit = AsyncMock()
     session.refresh = AsyncMock()
     return session
@@ -617,3 +623,1362 @@ class TestSubscriptionDataTransformation:
             assert "tier" in result
             assert "cancel_at_period_end" in result
             assert isinstance(result["cancel_at_period_end"], bool)
+
+
+# ============================================================================
+# Test Class: Subscription Tier Update - P3-002
+# ============================================================================
+
+class TestSubscriptionTierUpdate:
+    """Test suite for subscription tier updates (P3-002)."""
+
+    @pytest.mark.asyncio
+    async def test_update_tier_bronze_to_silver(
+        self,
+        subscription_service,
+        sample_api_key,
+        mock_db_session
+    ):
+        """Test upgrading subscription from Bronze to Silver tier."""
+        # Arrange
+        await subscription_service.initialize(sample_api_key)
+        subscription_id = "sub_bronze_001"
+
+        # Mock current subscription (Bronze tier)
+        current_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "active",
+            "current_period_start": datetime.now(timezone.utc),
+            "current_period_end": datetime.now(timezone.utc) + timedelta(days=30),
+            "cancel_at_period_end": False,
+            "items": {
+                "data": [
+                    {
+                        "id": "si_item1",
+                        "price": {"id": "price_bronze_ai_labels", "type": "recurring"}
+                    },
+                    {
+                        "id": "si_item2",
+                        "price": {"id": "price_bronze_human_audits", "type": "recurring"}
+                    },
+                    {
+                        "id": "si_item3",
+                        "price": {"id": "price_bronze_platform_fee", "type": "recurring"}
+                    }
+                ]
+            }
+        }
+
+        # Mock updated subscription (Silver tier)
+        updated_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "active",
+            "current_period_start": datetime.now(timezone.utc),
+            "current_period_end": datetime.now(timezone.utc) + timedelta(days=30),
+            "cancel_at_period_end": False,
+            "items": {
+                "data": [
+                    {"price": {"id": "price_silver_ai_labels", "type": "recurring"}},
+                    {"price": {"id": "price_silver_human_audits", "type": "recurring"}},
+                    {"price": {"id": "price_silver_platform_fee", "type": "recurring"}}
+                ]
+            }
+        }
+
+        with patch('stripe.Subscription.retrieve') as mock_retrieve:
+            mock_retrieve.return_value = current_subscription
+
+            with patch('stripe.Subscription.modify') as mock_modify:
+                mock_modify.return_value = updated_subscription
+
+                # Act
+                result = await subscription_service.update_subscription_tier(
+                    stripe_subscription_id=subscription_id,
+                    new_tier=SubscriptionTier.SILVER,
+                    db_session=mock_db_session
+                )
+
+                # Assert - Stripe API called
+                mock_retrieve.assert_called_once_with(subscription_id)
+                mock_modify.assert_called_once()
+
+                # Assert - Modify called with correct parameters
+                call_args = mock_modify.call_args
+                assert call_args[0][0] == subscription_id
+                modify_params = call_args[1]
+                assert "items" in modify_params
+                assert modify_params["proration_behavior"] == "create_prorations"
+
+                # Assert - Price IDs updated to Silver tier
+                items = modify_params["items"]
+                price_ids = {item["price"] for item in items}
+                assert "price_silver_ai_labels" in price_ids
+                assert "price_silver_human_audits" in price_ids
+                assert "price_silver_platform_fee" in price_ids
+
+                # Assert - Return value
+                assert result["stripe_subscription_id"] == subscription_id
+                assert result["tier"] == "silver"
+
+    @pytest.mark.asyncio
+    async def test_update_tier_silver_to_gold(
+        self,
+        subscription_service,
+        sample_api_key,
+        mock_db_session
+    ):
+        """Test upgrading subscription from Silver to Gold tier."""
+        # Arrange
+        await subscription_service.initialize(sample_api_key)
+        subscription_id = "sub_silver_001"
+
+        current_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "active",
+            "current_period_start": datetime.now(timezone.utc),
+            "current_period_end": datetime.now(timezone.utc) + timedelta(days=30),
+            "cancel_at_period_end": False,
+            "items": {
+                "data": [
+                    {"id": "si_item1", "price": {"id": "price_silver_ai_labels"}},
+                    {"id": "si_item2", "price": {"id": "price_silver_human_audits"}},
+                    {"id": "si_item3", "price": {"id": "price_silver_platform_fee"}}
+                ]
+            }
+        }
+
+        updated_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "active",
+            "current_period_end": datetime.now(timezone.utc) + timedelta(days=30),
+            "items": {
+                "data": [
+                    {"price": {"id": "price_gold_ai_labels"}},
+                    {"price": {"id": "price_gold_human_audits"}},
+                    {"price": {"id": "price_gold_platform_fee"}}
+                ]
+            }
+        }
+
+        with patch('stripe.Subscription.retrieve') as mock_retrieve:
+            mock_retrieve.return_value = current_subscription
+
+            with patch('stripe.Subscription.modify') as mock_modify:
+                mock_modify.return_value = updated_subscription
+
+                # Act
+                result = await subscription_service.update_subscription_tier(
+                    stripe_subscription_id=subscription_id,
+                    new_tier=SubscriptionTier.GOLD,
+                    db_session=mock_db_session
+                )
+
+                # Assert - Price IDs updated to Gold tier
+                call_args = mock_modify.call_args
+                modify_params = call_args[1]
+                items = modify_params["items"]
+                price_ids = {item["price"] for item in items}
+                assert "price_gold_ai_labels" in price_ids
+                assert "price_gold_human_audits" in price_ids
+                assert "price_gold_platform_fee" in price_ids
+
+                # Assert - Return value
+                assert result["tier"] == "gold"
+
+    @pytest.mark.asyncio
+    async def test_update_tier_gold_to_silver_downgrade(
+        self,
+        subscription_service,
+        sample_api_key,
+        mock_db_session
+    ):
+        """Test downgrading subscription from Gold to Silver tier."""
+        # Arrange
+        await subscription_service.initialize(sample_api_key)
+        subscription_id = "sub_gold_001"
+
+        current_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "active",
+            "current_period_start": datetime.now(timezone.utc),
+            "current_period_end": datetime.now(timezone.utc) + timedelta(days=30),
+            "cancel_at_period_end": False,
+            "items": {
+                "data": [
+                    {"id": "si_item1", "price": {"id": "price_gold_ai_labels"}},
+                    {"id": "si_item2", "price": {"id": "price_gold_human_audits"}},
+                    {"id": "si_item3", "price": {"id": "price_gold_platform_fee"}}
+                ]
+            }
+        }
+
+        updated_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "active",
+            "items": {
+                "data": [
+                    {"price": {"id": "price_silver_ai_labels"}},
+                    {"price": {"id": "price_silver_human_audits"}},
+                    {"price": {"id": "price_silver_platform_fee"}}
+                ]
+            }
+        }
+
+        with patch('stripe.Subscription.retrieve') as mock_retrieve:
+            mock_retrieve.return_value = current_subscription
+
+            with patch('stripe.Subscription.modify') as mock_modify:
+                mock_modify.return_value = updated_subscription
+
+                # Act
+                result = await subscription_service.update_subscription_tier(
+                    stripe_subscription_id=subscription_id,
+                    new_tier=SubscriptionTier.SILVER,
+                    db_session=mock_db_session
+                )
+
+                # Assert - Price IDs updated to Silver tier
+                call_args = mock_modify.call_args
+                modify_params = call_args[1]
+                items = modify_params["items"]
+                price_ids = {item["price"] for item in items}
+                assert "price_silver_ai_labels" in price_ids
+                assert "price_silver_human_audits" in price_ids
+                assert "price_silver_platform_fee" in price_ids
+
+                # Assert - Return value
+                assert result["tier"] == "silver"
+
+    @pytest.mark.asyncio
+    async def test_update_tier_same_tier_noop(
+        self,
+        subscription_service,
+        sample_api_key,
+        mock_db_session
+    ):
+        """Test updating to the same tier (should be a no-op)."""
+        # Arrange
+        await subscription_service.initialize(sample_api_key)
+        subscription_id = "sub_gold_001"
+
+        current_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "active",
+            "current_period_start": datetime.now(timezone.utc),
+            "current_period_end": datetime.now(timezone.utc) + timedelta(days=30),
+            "cancel_at_period_end": False,
+            "items": {
+                "data": [
+                    {"id": "si_item1", "price": {"id": "price_gold_ai_labels"}},
+                    {"id": "si_item2", "price": {"id": "price_gold_human_audits"}},
+                    {"id": "si_item3", "price": {"id": "price_gold_platform_fee"}}
+                ]
+            }
+        }
+
+        with patch('stripe.Subscription.retrieve') as mock_retrieve:
+            mock_retrieve.return_value = current_subscription
+
+            # Act
+            result = await subscription_service.update_subscription_tier(
+                stripe_subscription_id=subscription_id,
+                new_tier=SubscriptionTier.GOLD,
+                db_session=mock_db_session
+            )
+
+            # Assert - Should not call modify (same tier)
+            # Just return current subscription data
+            assert result["tier"] == "gold"
+            assert result["stripe_subscription_id"] == subscription_id
+
+    @pytest.mark.asyncio
+    async def test_update_tier_without_db_session(
+        self,
+        subscription_service,
+        sample_api_key
+    ):
+        """Test tier update without database session (optional persistence)."""
+        # Arrange
+        await subscription_service.initialize(sample_api_key)
+        subscription_id = "sub_bronze_002"
+
+        current_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "active",
+            "items": {
+                "data": [
+                    {"id": "si_item1", "price": {"id": "price_bronze_ai_labels"}},
+                    {"id": "si_item2", "price": {"id": "price_bronze_human_audits"}},
+                    {"id": "si_item3", "price": {"id": "price_bronze_platform_fee"}}
+                ]
+            }
+        }
+
+        updated_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "active",
+            "items": {
+                "data": [
+                    {"price": {"id": "price_silver_ai_labels"}},
+                    {"price": {"id": "price_silver_human_audits"}},
+                    {"price": {"id": "price_silver_platform_fee"}}
+                ]
+            }
+        }
+
+        with patch('stripe.Subscription.retrieve') as mock_retrieve:
+            mock_retrieve.return_value = current_subscription
+
+            with patch('stripe.Subscription.modify') as mock_modify:
+                mock_modify.return_value = updated_subscription
+
+                # Act
+                result = await subscription_service.update_subscription_tier(
+                    stripe_subscription_id=subscription_id,
+                    new_tier=SubscriptionTier.SILVER,
+                    db_session=None
+                )
+
+                # Assert - Still returns subscription data
+                assert result["tier"] == "silver"
+
+
+class TestSubscriptionTierUpdateErrorHandling:
+    """Test suite for tier update error handling."""
+
+    @pytest.mark.asyncio
+    async def test_update_tier_not_initialized(
+        self,
+        subscription_service,
+        mock_db_session
+    ):
+        """Test that tier update fails if service not initialized."""
+        # Act & Assert
+        with pytest.raises(StripeServiceError) as exc_info:
+            await subscription_service.update_subscription_tier(
+                stripe_subscription_id="sub_001",
+                new_tier=SubscriptionTier.GOLD,
+                db_session=mock_db_session
+            )
+
+        assert "not initialized" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_update_tier_stripe_api_error(
+        self,
+        subscription_service,
+        sample_api_key,
+        mock_db_session
+    ):
+        """Test handling of Stripe API errors during tier update."""
+        # Arrange
+        await subscription_service.initialize(sample_api_key)
+        subscription_id = "sub_error_001"
+
+        with patch('stripe.Subscription.retrieve') as mock_retrieve:
+            mock_retrieve.side_effect = stripe.error.InvalidRequestError(
+                "No such subscription",
+                "subscription"
+            )
+
+            # Act & Assert
+            with pytest.raises(StripeAPIError) as exc_info:
+                await subscription_service.update_subscription_tier(
+                    stripe_subscription_id=subscription_id,
+                    new_tier=SubscriptionTier.GOLD,
+                    db_session=mock_db_session
+                )
+
+            assert "Failed to update subscription tier" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_update_tier_modify_fails(
+        self,
+        subscription_service,
+        sample_api_key,
+        mock_db_session
+    ):
+        """Test handling of Stripe modify API errors."""
+        # Arrange
+        await subscription_service.initialize(sample_api_key)
+        subscription_id = "sub_modify_error_001"
+
+        current_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "active",
+            "items": {
+                "data": [
+                    {"id": "si_item1", "price": {"id": "price_bronze_ai_labels"}},
+                    {"id": "si_item2", "price": {"id": "price_bronze_human_audits"}},
+                    {"id": "si_item3", "price": {"id": "price_bronze_platform_fee"}}
+                ]
+            }
+        }
+
+        with patch('stripe.Subscription.retrieve') as mock_retrieve:
+            mock_retrieve.return_value = current_subscription
+
+            with patch('stripe.Subscription.modify') as mock_modify:
+                mock_modify.side_effect = stripe.error.APIError("API connection failed")
+
+                # Act & Assert
+                with pytest.raises(StripeAPIError):
+                    await subscription_service.update_subscription_tier(
+                        stripe_subscription_id=subscription_id,
+                        new_tier=SubscriptionTier.GOLD,
+                        db_session=mock_db_session
+                    )
+
+
+# ============================================================================
+# Test Class: Subscription Cancellation - P3-002
+# ============================================================================
+
+class TestSubscriptionCancellation:
+    """Test suite for subscription cancellation (P3-002)."""
+
+    @pytest.mark.asyncio
+    async def test_cancel_subscription_immediate(
+        self,
+        subscription_service,
+        sample_api_key,
+        mock_db_session
+    ):
+        """Test immediate subscription cancellation (at_period_end=False)."""
+        # Arrange
+        await subscription_service.initialize(sample_api_key)
+        subscription_id = "sub_cancel_001"
+
+        current_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "active",
+            "current_period_start": datetime.now(timezone.utc),
+            "current_period_end": datetime.now(timezone.utc) + timedelta(days=30),
+            "cancel_at_period_end": False,
+            "items": {"data": []}
+        }
+
+        canceled_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "canceled",
+            "current_period_start": datetime.now(timezone.utc),
+            "current_period_end": datetime.now(timezone.utc) + timedelta(days=30),
+            "cancel_at_period_end": False,
+            "items": {"data": []}
+        }
+
+        with patch('stripe.Subscription.retrieve') as mock_retrieve:
+            mock_retrieve.return_value = current_subscription
+
+            with patch('stripe.Subscription.delete') as mock_delete:
+                mock_delete.return_value = canceled_subscription
+
+                # Act
+                result = await subscription_service.cancel_subscription(
+                    stripe_subscription_id=subscription_id,
+                    at_period_end=False,
+                    db_session=mock_db_session
+                )
+
+                # Assert - Stripe delete called
+                mock_retrieve.assert_called_once_with(subscription_id)
+                mock_delete.assert_called_once_with(subscription_id)
+
+                # Assert - Return value
+                assert result["stripe_subscription_id"] == subscription_id
+                assert result["status"] == "canceled"
+
+    @pytest.mark.asyncio
+    async def test_cancel_subscription_at_period_end(
+        self,
+        subscription_service,
+        sample_api_key,
+        mock_db_session
+    ):
+        """Test canceling subscription at period end (at_period_end=True)."""
+        # Arrange
+        await subscription_service.initialize(sample_api_key)
+        subscription_id = "sub_cancel_period_001"
+
+        current_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "active",
+            "current_period_start": datetime.now(timezone.utc),
+            "current_period_end": datetime.now(timezone.utc) + timedelta(days=30),
+            "cancel_at_period_end": False,
+            "items": {"data": []}
+        }
+
+        updated_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "active",
+            "current_period_start": datetime.now(timezone.utc),
+            "current_period_end": datetime.now(timezone.utc) + timedelta(days=30),
+            "cancel_at_period_end": True,
+            "items": {"data": []}
+        }
+
+        with patch('stripe.Subscription.retrieve') as mock_retrieve:
+            mock_retrieve.return_value = current_subscription
+
+            with patch('stripe.Subscription.modify') as mock_modify:
+                mock_modify.return_value = updated_subscription
+
+                # Act
+                result = await subscription_service.cancel_subscription(
+                    stripe_subscription_id=subscription_id,
+                    at_period_end=True,
+                    db_session=mock_db_session
+                )
+
+                # Assert - Stripe modify called
+                mock_modify.assert_called_once()
+
+                # Assert - Modify called with correct parameters
+                call_args = mock_modify.call_args
+                assert call_args[0][0] == subscription_id
+                modify_params = call_args[1]
+                assert modify_params["cancel_at_period_end"] is True
+
+                # Assert - Return value
+                assert result["stripe_subscription_id"] == subscription_id
+                assert result["cancel_at_period_end"] is True
+                assert result["status"] == "active"  # Still active until period end
+
+    @pytest.mark.asyncio
+    async def test_cancel_subscription_without_db_session(
+        self,
+        subscription_service,
+        sample_api_key
+    ):
+        """Test cancellation without database session."""
+        # Arrange
+        await subscription_service.initialize(sample_api_key)
+        subscription_id = "sub_cancel_no_db_001"
+
+        current_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "active",
+            "items": {"data": []}
+        }
+
+        canceled_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "canceled",
+            "items": {"data": []}
+        }
+
+        with patch('stripe.Subscription.retrieve') as mock_retrieve:
+            mock_retrieve.return_value = current_subscription
+
+            with patch('stripe.Subscription.delete') as mock_delete:
+                mock_delete.return_value = canceled_subscription
+
+                # Act
+                result = await subscription_service.cancel_subscription(
+                    stripe_subscription_id=subscription_id,
+                    at_period_end=False,
+                    db_session=None
+                )
+
+                # Assert - Still returns subscription data
+                assert result["status"] == "canceled"
+
+
+class TestSubscriptionCancellationErrorHandling:
+    """Test suite for cancellation error handling."""
+
+    @pytest.mark.asyncio
+    async def test_cancel_subscription_not_initialized(
+        self,
+        subscription_service,
+        mock_db_session
+    ):
+        """Test that cancellation fails if service not initialized."""
+        # Act & Assert
+        with pytest.raises(StripeServiceError) as exc_info:
+            await subscription_service.cancel_subscription(
+                stripe_subscription_id="sub_001",
+                at_period_end=False,
+                db_session=mock_db_session
+            )
+
+        assert "not initialized" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_cancel_subscription_invalid_id(
+        self,
+        subscription_service,
+        sample_api_key,
+        mock_db_session
+    ):
+        """Test handling of invalid subscription ID."""
+        # Arrange
+        await subscription_service.initialize(sample_api_key)
+
+        with patch('stripe.Subscription.retrieve') as mock_retrieve:
+            mock_retrieve.side_effect = stripe.error.InvalidRequestError(
+                "No such subscription",
+                "subscription"
+            )
+
+            # Act & Assert
+            with pytest.raises(StripeAPIError):
+                await subscription_service.cancel_subscription(
+                    stripe_subscription_id="sub_invalid_001",
+                    at_period_end=False,
+                    db_session=mock_db_session
+                )
+
+    @pytest.mark.asyncio
+    async def test_cancel_subscription_delete_fails(
+        self,
+        subscription_service,
+        sample_api_key,
+        mock_db_session
+    ):
+        """Test handling of Stripe delete API errors."""
+        # Arrange
+        await subscription_service.initialize(sample_api_key)
+        subscription_id = "sub_delete_error_001"
+
+        current_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "active",
+            "items": {"data": []}
+        }
+
+        with patch('stripe.Subscription.retrieve') as mock_retrieve:
+            mock_retrieve.return_value = current_subscription
+
+            with patch('stripe.Subscription.delete') as mock_delete:
+                mock_delete.side_effect = stripe.error.APIError("API connection failed")
+
+                # Act & Assert
+                with pytest.raises(StripeAPIError):
+                    await subscription_service.cancel_subscription(
+                        stripe_subscription_id=subscription_id,
+                        at_period_end=False,
+                        db_session=mock_db_session
+                    )
+
+
+class TestSubscriptionEdgeCases:
+    """Test suite for edge cases in tier updates and cancellations."""
+
+    @pytest.mark.asyncio
+    async def test_update_tier_already_canceled_subscription(
+        self,
+        subscription_service,
+        sample_api_key,
+        mock_db_session
+    ):
+        """Test updating tier on already canceled subscription."""
+        # Arrange
+        await subscription_service.initialize(sample_api_key)
+        subscription_id = "sub_canceled_001"
+
+        canceled_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "canceled",
+            "items": {"data": []}
+        }
+
+        with patch('stripe.Subscription.retrieve') as mock_retrieve:
+            mock_retrieve.return_value = canceled_subscription
+
+            # Act & Assert
+            with pytest.raises(StripeServiceError) as exc_info:
+                await subscription_service.update_subscription_tier(
+                    stripe_subscription_id=subscription_id,
+                    new_tier=SubscriptionTier.GOLD,
+                    db_session=mock_db_session
+                )
+
+            assert "canceled" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_cancel_already_canceled_subscription(
+        self,
+        subscription_service,
+        sample_api_key,
+        mock_db_session
+    ):
+        """Test canceling an already canceled subscription."""
+        # Arrange
+        await subscription_service.initialize(sample_api_key)
+        subscription_id = "sub_already_canceled_001"
+
+        canceled_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "canceled",
+            "items": {"data": []}
+        }
+
+        with patch('stripe.Subscription.retrieve') as mock_retrieve:
+            mock_retrieve.return_value = canceled_subscription
+
+            # Act & Assert
+            with pytest.raises(StripeServiceError) as exc_info:
+                await subscription_service.cancel_subscription(
+                    stripe_subscription_id=subscription_id,
+                    at_period_end=False,
+                    db_session=mock_db_session
+                )
+
+            assert "canceled" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_update_tier_with_trial_subscription(
+        self,
+        subscription_service,
+        sample_api_key,
+        mock_db_session
+    ):
+        """Test updating tier on subscription with active trial."""
+        # Arrange
+        await subscription_service.initialize(sample_api_key)
+        subscription_id = "sub_trial_001"
+
+        trial_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "trialing",
+            "trial_start": int(datetime.now(timezone.utc).timestamp()),
+            "trial_end": int((datetime.now(timezone.utc) + timedelta(days=14)).timestamp()),
+            "items": {
+                "data": [
+                    {"id": "si_item1", "price": {"id": "price_bronze_ai_labels"}},
+                    {"id": "si_item2", "price": {"id": "price_bronze_human_audits"}},
+                    {"id": "si_item3", "price": {"id": "price_bronze_platform_fee"}}
+                ]
+            }
+        }
+
+        updated_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "trialing",
+            "items": {
+                "data": [
+                    {"price": {"id": "price_silver_ai_labels"}},
+                    {"price": {"id": "price_silver_human_audits"}},
+                    {"price": {"id": "price_silver_platform_fee"}}
+                ]
+            }
+        }
+
+        with patch('stripe.Subscription.retrieve') as mock_retrieve:
+            mock_retrieve.return_value = trial_subscription
+
+            with patch('stripe.Subscription.modify') as mock_modify:
+                mock_modify.return_value = updated_subscription
+
+                # Act
+                result = await subscription_service.update_subscription_tier(
+                    stripe_subscription_id=subscription_id,
+                    new_tier=SubscriptionTier.SILVER,
+                    db_session=mock_db_session
+                )
+
+                # Assert - Should allow tier update during trial
+                assert result["tier"] == "silver"
+                assert result["status"] == "trialing"
+
+
+# ============================================================================
+# Test Class: Subscription ID Validation - Security
+# ============================================================================
+
+class TestSubscriptionIDValidation:
+    """Test suite for subscription ID format validation (P3-002 security fixes)."""
+
+    @pytest.mark.asyncio
+    async def test_update_subscription_invalid_format_empty_string(
+        self,
+        subscription_service,
+        sample_api_key,
+        mock_db_session
+    ):
+        """Test that update_subscription_tier rejects empty subscription ID."""
+        # Arrange
+        await subscription_service.initialize(sample_api_key)
+
+        # Act & Assert
+        with pytest.raises(StripeServiceError) as exc_info:
+            await subscription_service.update_subscription_tier(
+                stripe_subscription_id="",
+                new_tier=SubscriptionTier.GOLD,
+                db_session=mock_db_session
+            )
+
+        assert "cannot be empty" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_update_subscription_invalid_format_not_sub_prefix(
+        self,
+        subscription_service,
+        sample_api_key,
+        mock_db_session
+    ):
+        """Test that update_subscription_tier rejects ID without 'sub_' prefix."""
+        # Arrange
+        await subscription_service.initialize(sample_api_key)
+
+        # Act & Assert
+        with pytest.raises(StripeServiceError) as exc_info:
+            await subscription_service.update_subscription_tier(
+                stripe_subscription_id="invalid_id_123",
+                new_tier=SubscriptionTier.GOLD,
+                db_session=mock_db_session
+            )
+
+        assert "must start with 'sub_'" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_update_subscription_invalid_format_too_short(
+        self,
+        subscription_service,
+        sample_api_key,
+        mock_db_session
+    ):
+        """Test that update_subscription_tier rejects ID shorter than 10 characters."""
+        # Arrange
+        await subscription_service.initialize(sample_api_key)
+
+        # Act & Assert
+        with pytest.raises(StripeServiceError) as exc_info:
+            await subscription_service.update_subscription_tier(
+                stripe_subscription_id="sub_123",
+                new_tier=SubscriptionTier.GOLD,
+                db_session=mock_db_session
+            )
+
+        assert "at least 10 characters" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_cancel_subscription_invalid_format(
+        self,
+        subscription_service,
+        sample_api_key,
+        mock_db_session
+    ):
+        """Test that cancel_subscription rejects invalid format ID."""
+        # Arrange
+        await subscription_service.initialize(sample_api_key)
+
+        # Act & Assert
+        with pytest.raises(StripeServiceError) as exc_info:
+            await subscription_service.cancel_subscription(
+                stripe_subscription_id="invalid_format",
+                at_period_end=False,
+                db_session=mock_db_session
+            )
+
+        assert "must start with 'sub_'" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_update_subscription_valid_format_works(
+        self,
+        subscription_service,
+        sample_api_key,
+        mock_db_session
+    ):
+        """Test that valid subscription ID format passes validation."""
+        # Arrange
+        await subscription_service.initialize(sample_api_key)
+        subscription_id = "sub_valid_abc_123_xyz"
+
+        current_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "active",
+            "items": {
+                "data": [
+                    {"id": "si_item1", "price": {"id": "price_bronze_ai_labels"}},
+                    {"id": "si_item2", "price": {"id": "price_bronze_human_audits"}},
+                    {"id": "si_item3", "price": {"id": "price_bronze_platform_fee"}}
+                ]
+            }
+        }
+
+        updated_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "active",
+            "items": {
+                "data": [
+                    {"price": {"id": "price_silver_ai_labels"}},
+                    {"price": {"id": "price_silver_human_audits"}},
+                    {"price": {"id": "price_silver_platform_fee"}}
+                ]
+            }
+        }
+
+        with patch('stripe.Subscription.retrieve') as mock_retrieve:
+            mock_retrieve.return_value = current_subscription
+
+            with patch('stripe.Subscription.modify') as mock_modify:
+                mock_modify.return_value = updated_subscription
+
+                # Act - Should not raise validation error
+                result = await subscription_service.update_subscription_tier(
+                    stripe_subscription_id=subscription_id,
+                    new_tier=SubscriptionTier.SILVER,
+                    db_session=mock_db_session
+                )
+
+                # Assert
+                assert result["tier"] == "silver"
+
+
+# ============================================================================
+# Test Class: Authorization and Cross-Tenant Access - Security
+# ============================================================================
+
+class TestCrossTenantAuthorization:
+    """Test suite for cross-tenant authorization (P3-002 security fixes)."""
+
+    def _create_mock_db_session_with_subscription(self, tenant_id: str):
+        """Helper to create a mock DB session that returns a subscription."""
+        session = AsyncMock(spec=AsyncSession)
+        session.add = Mock()
+        session.commit = AsyncMock()
+        session.refresh = AsyncMock()
+
+        # Create a mock subscription with specific tenant_id
+        mock_subscription = Mock()
+        mock_subscription.tenant_id = tenant_id
+        mock_subscription.stripe_subscription_id = "sub_auth_001"
+        mock_subscription.stripe_customer_id = "cus_001"
+        mock_subscription.status = "active"
+        mock_subscription.tier = "bronze"
+
+        # Mock execute to return a result with the subscription
+        mock_result = AsyncMock()
+        mock_result.scalar_one_or_none = Mock(return_value=mock_subscription)
+        session.execute = AsyncMock(return_value=mock_result)
+
+        return session, mock_subscription
+
+    @pytest.mark.asyncio
+    async def test_update_subscription_cross_tenant_denied(
+        self,
+        subscription_service,
+        sample_api_key
+    ):
+        """Test that cross-tenant tier update is denied."""
+        # Arrange
+        await subscription_service.initialize(sample_api_key)
+        subscription_id = "sub_auth_001"
+
+        # Mock DB session for tenant "tenant_001"
+        db_session, db_subscription = self._create_mock_db_session_with_subscription("tenant_001")
+
+        current_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "active",
+            "items": {
+                "data": [
+                    {"id": "si_item1", "price": {"id": "price_bronze_ai_labels"}},
+                    {"id": "si_item2", "price": {"id": "price_bronze_human_audits"}},
+                    {"id": "si_item3", "price": {"id": "price_bronze_platform_fee"}}
+                ]
+            }
+        }
+
+        with patch('stripe.Subscription.retrieve') as mock_retrieve:
+            mock_retrieve.return_value = current_subscription
+
+            # Act & Assert - Try to update from different tenant
+            with pytest.raises(StripeServiceError) as exc_info:
+                await subscription_service.update_subscription_tier(
+                    stripe_subscription_id=subscription_id,
+                    new_tier=SubscriptionTier.GOLD,
+                    db_session=db_session,
+                    requesting_tenant_id="tenant_002"  # Different tenant!
+                )
+
+            assert "access denied" in str(exc_info.value).lower() or "ownership" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_update_subscription_cross_tenant_with_different_tenant_id(
+        self,
+        subscription_service,
+        sample_api_key
+    ):
+        """Test that update fails when requesting tenant doesn't match subscription owner."""
+        # Arrange
+        await subscription_service.initialize(sample_api_key)
+        subscription_id = "sub_auth_002"
+
+        # Mock DB session for tenant "original_tenant"
+        db_session, db_subscription = self._create_mock_db_session_with_subscription("original_tenant")
+
+        current_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "active",
+            "items": {
+                "data": [
+                    {"id": "si_item1", "price": {"id": "price_bronze_ai_labels"}},
+                    {"id": "si_item2", "price": {"id": "price_bronze_human_audits"}},
+                    {"id": "si_item3", "price": {"id": "price_bronze_platform_fee"}}
+                ]
+            }
+        }
+
+        with patch('stripe.Subscription.retrieve') as mock_retrieve:
+            mock_retrieve.return_value = current_subscription
+
+            # Act & Assert
+            with pytest.raises(StripeServiceError) as exc_info:
+                await subscription_service.update_subscription_tier(
+                    stripe_subscription_id=subscription_id,
+                    new_tier=SubscriptionTier.SILVER,
+                    db_session=db_session,
+                    requesting_tenant_id="attacker_tenant"
+                )
+
+            assert "access denied" in str(exc_info.value).lower() or "ownership" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_cancel_subscription_cross_tenant_denied(
+        self,
+        subscription_service,
+        sample_api_key
+    ):
+        """Test that cross-tenant cancellation is denied."""
+        # Arrange
+        await subscription_service.initialize(sample_api_key)
+        subscription_id = "sub_auth_003"
+
+        # Mock DB session for tenant "tenant_owner"
+        db_session, db_subscription = self._create_mock_db_session_with_subscription("tenant_owner")
+
+        current_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "active",
+            "items": {"data": []}
+        }
+
+        with patch('stripe.Subscription.retrieve') as mock_retrieve:
+            mock_retrieve.return_value = current_subscription
+
+            # Act & Assert - Try to cancel from different tenant
+            with pytest.raises(StripeServiceError) as exc_info:
+                await subscription_service.cancel_subscription(
+                    stripe_subscription_id=subscription_id,
+                    at_period_end=False,
+                    db_session=db_session,
+                    requesting_tenant_id="tenant_attacker"
+                )
+
+            assert "access denied" in str(exc_info.value).lower() or "ownership" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_update_subscription_same_tenant_allowed(
+        self,
+        subscription_service,
+        sample_api_key
+    ):
+        """Test that same-tenant tier update is allowed."""
+        # Arrange
+        await subscription_service.initialize(sample_api_key)
+        subscription_id = "sub_auth_004"
+
+        # Mock DB session for tenant "tenant_same"
+        db_session, db_subscription = self._create_mock_db_session_with_subscription("tenant_same")
+
+        current_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "active",
+            "items": {
+                "data": [
+                    {"id": "si_item1", "price": {"id": "price_bronze_ai_labels"}},
+                    {"id": "si_item2", "price": {"id": "price_bronze_human_audits"}},
+                    {"id": "si_item3", "price": {"id": "price_bronze_platform_fee"}}
+                ]
+            }
+        }
+
+        updated_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "active",
+            "items": {
+                "data": [
+                    {"price": {"id": "price_silver_ai_labels"}},
+                    {"price": {"id": "price_silver_human_audits"}},
+                    {"price": {"id": "price_silver_platform_fee"}}
+                ]
+            }
+        }
+
+        with patch('stripe.Subscription.retrieve') as mock_retrieve:
+            mock_retrieve.return_value = current_subscription
+
+            with patch('stripe.Subscription.modify') as mock_modify:
+                mock_modify.return_value = updated_subscription
+
+                # Act - Same tenant, should be allowed
+                result = await subscription_service.update_subscription_tier(
+                    stripe_subscription_id=subscription_id,
+                    new_tier=SubscriptionTier.SILVER,
+                    db_session=db_session,
+                    requesting_tenant_id="tenant_same"  # Same tenant!
+                )
+
+                # Assert
+                assert result["tier"] == "silver"
+
+
+# ============================================================================
+# Test Class: Idempotency Key Support - Security
+# ============================================================================
+
+class TestIdempotencyKeySupport:
+    """Test suite for idempotency key support (P3-002 security fixes)."""
+
+    @pytest.mark.asyncio
+    async def test_update_subscription_idempotent_with_key(
+        self,
+        subscription_service,
+        sample_api_key,
+        mock_db_session
+    ):
+        """Test that idempotency key is passed to Stripe API for tier update."""
+        # Arrange
+        await subscription_service.initialize(sample_api_key)
+        subscription_id = "sub_idem_001"
+        idempotency_key = "idemp_key_12345"
+
+        current_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "active",
+            "items": {
+                "data": [
+                    {"id": "si_item1", "price": {"id": "price_bronze_ai_labels"}},
+                    {"id": "si_item2", "price": {"id": "price_bronze_human_audits"}},
+                    {"id": "si_item3", "price": {"id": "price_bronze_platform_fee"}}
+                ]
+            }
+        }
+
+        updated_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "active",
+            "items": {
+                "data": [
+                    {"price": {"id": "price_silver_ai_labels"}},
+                    {"price": {"id": "price_silver_human_audits"}},
+                    {"price": {"id": "price_silver_platform_fee"}}
+                ]
+            }
+        }
+
+        with patch('stripe.Subscription.retrieve') as mock_retrieve:
+            mock_retrieve.return_value = current_subscription
+
+            with patch('stripe.Subscription.modify') as mock_modify:
+                mock_modify.return_value = updated_subscription
+
+                # Act
+                await subscription_service.update_subscription_tier(
+                    stripe_subscription_id=subscription_id,
+                    new_tier=SubscriptionTier.SILVER,
+                    db_session=mock_db_session,
+                    idempotency_key=idempotency_key
+                )
+
+                # Assert - Idempotency key was passed to Stripe API
+                call_args = mock_modify.call_args
+                modify_params = call_args[1]
+                assert modify_params["idempotency_key"] == idempotency_key
+
+    @pytest.mark.asyncio
+    async def test_update_subscription_without_idempotency_key(
+        self,
+        subscription_service,
+        sample_api_key,
+        mock_db_session
+    ):
+        """Test that tier update works without idempotency key (optional)."""
+        # Arrange
+        await subscription_service.initialize(sample_api_key)
+        subscription_id = "sub_idem_002"
+
+        current_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "active",
+            "items": {
+                "data": [
+                    {"id": "si_item1", "price": {"id": "price_bronze_ai_labels"}},
+                    {"id": "si_item2", "price": {"id": "price_bronze_human_audits"}},
+                    {"id": "si_item3", "price": {"id": "price_bronze_platform_fee"}}
+                ]
+            }
+        }
+
+        updated_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "active",
+            "items": {
+                "data": [
+                    {"price": {"id": "price_silver_ai_labels"}},
+                    {"price": {"id": "price_silver_human_audits"}},
+                    {"price": {"id": "price_silver_platform_fee"}}
+                ]
+            }
+        }
+
+        with patch('stripe.Subscription.retrieve') as mock_retrieve:
+            mock_retrieve.return_value = current_subscription
+
+            with patch('stripe.Subscription.modify') as mock_modify:
+                mock_modify.return_value = updated_subscription
+
+                # Act - No idempotency key provided
+                await subscription_service.update_subscription_tier(
+                    stripe_subscription_id=subscription_id,
+                    new_tier=SubscriptionTier.SILVER,
+                    db_session=mock_db_session
+                )
+
+                # Assert - Should work without idempotency key
+                mock_modify.assert_called_once()
+                call_args = mock_modify.call_args
+                modify_params = call_args[1]
+                assert "idempotency_key" not in modify_params
+
+    @pytest.mark.asyncio
+    async def test_cancel_subscription_idempotent(
+        self,
+        subscription_service,
+        sample_api_key,
+        mock_db_session
+    ):
+        """Test that idempotency key is passed to Stripe API for cancellation."""
+        # Arrange
+        await subscription_service.initialize(sample_api_key)
+        subscription_id = "sub_idem_003"
+        idempotency_key = "idemp_cancel_123"
+
+        current_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "active",
+            "current_period_start": datetime.now(timezone.utc),
+            "current_period_end": datetime.now(timezone.utc) + timedelta(days=30),
+            "cancel_at_period_end": False,
+            "items": {"data": []}
+        }
+
+        canceled_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "canceled",
+            "current_period_start": datetime.now(timezone.utc),
+            "current_period_end": datetime.now(timezone.utc) + timedelta(days=30),
+            "cancel_at_period_end": False,
+            "items": {"data": []}
+        }
+
+        with patch('stripe.Subscription.retrieve') as mock_retrieve:
+            mock_retrieve.return_value = current_subscription
+
+            with patch('stripe.Subscription.delete') as mock_delete:
+                mock_delete.return_value = canceled_subscription
+
+                # Act
+                await subscription_service.cancel_subscription(
+                    stripe_subscription_id=subscription_id,
+                    at_period_end=False,
+                    db_session=mock_db_session,
+                    idempotency_key=idempotency_key
+                )
+
+                # Assert - Idempotency key was passed to Stripe API
+                call_args = mock_delete.call_args
+                delete_params = call_args[1]
+                assert delete_params["idempotency_key"] == idempotency_key
+
+    @pytest.mark.asyncio
+    async def test_cancel_subscription_at_period_end_with_idempotency(
+        self,
+        subscription_service,
+        sample_api_key,
+        mock_db_session
+    ):
+        """Test that idempotency key works for cancel-at-period-end."""
+        # Arrange
+        await subscription_service.initialize(sample_api_key)
+        subscription_id = "sub_idem_004"
+        idempotency_key = "idemp_period_123"
+
+        current_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "active",
+            "current_period_start": datetime.now(timezone.utc),
+            "current_period_end": datetime.now(timezone.utc) + timedelta(days=30),
+            "cancel_at_period_end": False,
+            "items": {"data": []}
+        }
+
+        updated_subscription = {
+            "id": subscription_id,
+            "customer": "cus_001",
+            "status": "active",
+            "current_period_start": datetime.now(timezone.utc),
+            "current_period_end": datetime.now(timezone.utc) + timedelta(days=30),
+            "cancel_at_period_end": True,
+            "items": {"data": []}
+        }
+
+        with patch('stripe.Subscription.retrieve') as mock_retrieve:
+            mock_retrieve.return_value = current_subscription
+
+            with patch('stripe.Subscription.modify') as mock_modify:
+                mock_modify.return_value = updated_subscription
+
+                # Act
+                await subscription_service.cancel_subscription(
+                    stripe_subscription_id=subscription_id,
+                    at_period_end=True,
+                    db_session=mock_db_session,
+                    idempotency_key=idempotency_key
+                )
+
+                # Assert - Idempotency key was passed to Stripe modify API
+                call_args = mock_modify.call_args
+                modify_params = call_args[1]
+                assert modify_params["idempotency_key"] == idempotency_key
+                assert modify_params["cancel_at_period_end"] is True
+
