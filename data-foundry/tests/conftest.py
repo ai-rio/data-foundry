@@ -22,8 +22,16 @@ os.environ.setdefault('DATABASE_URL', 'postgresql://foundry_user:foundry_passwor
 # CRITICAL: Mock problematic modules BEFORE importing src.main
 # This prevents import errors when modules are not available
 sys.modules['structlog'] = Mock()
-sys.modules['jose'] = Mock()
-sys.modules['jose.jwt'] = Mock()
+
+# Only mock jose if it's not installed (like asyncpg and redis)
+try:
+    import jose
+    import jose.exceptions
+    import jose.jwt
+    # jose is installed, don't mock it
+except ImportError:
+    sys.modules['jose'] = Mock()
+    sys.modules['jose.jwt'] = Mock()
 
 # Only mock asyncpg and redis if they are not actually installed
 # This allows integration tests to use real database connections
