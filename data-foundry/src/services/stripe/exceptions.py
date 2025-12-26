@@ -21,9 +21,73 @@ Exception Hierarchy:
     └── StripeBatchError
 
 All exceptions support serialization via to_dict() method for logging and API responses.
+
+SECURITY: Sensitive data (API keys, passwords, tokens) is automatically redacted
+from to_dict() output to prevent credential leakage in logs and error responses.
 """
 
 from typing import Optional, Any, Dict
+import re
+
+
+# ============================================================================
+# Sensitive Data Sanitization
+# ============================================================================
+
+# Patterns to detect and redact sensitive data
+# These patterns are applied to all exception messages before serialization
+SENSITIVE_PATTERNS = [
+    # Stripe API keys - matches sk_test_*, sk_live_*, rk_test_*, rk_live_* formats
+    # Pattern: prefix + underscore + alphanumeric/underscore (minimum 10 chars total after prefix)
+    (r'\bsk_[a-zA-Z0-9_]{10,}', '**REDACTED_API_KEY**'),
+    (r'\brk_[a-zA-Z0-9_]{10,}', '**REDACTED_API_KEY**'),
+    # Bearer tokens and similar auth tokens
+    (r'Bearer\s+[a-zA-Z0-9\._\-]+', 'Bearer **REDACTED_TOKEN**'),
+    # Passwords in various formats
+    (r'password["\']?\s*[:=]\s*["\']?[^\s\'"]+', 'password:**REDACTED**'),
+    (r'Password["\']?\s*[:=]\s*["\']?[^\s\'"]+', 'Password:**REDACTED**'),
+    # Token patterns - more flexible to catch "Token: abc123xyz456"
+    (r'token["\']?\s*[:=]\s*["\']?[a-zA-Z0-9]{10,}', 'token:**REDACTED**'),
+    (r'Token["\']?\s*[:=]\s*["\']?[a-zA-Z0-9]{10,}', 'Token:**REDACTED**'),
+    # API key patterns (generic)
+    (r'api[_-]?key["\']?\s*[:=]\s*["\']?[a-zA-Z0-9]{10,}', 'api_key:**REDACTED**'),
+    (r'api[_-]?Key["\']?\s*[:=]\s*["\']?[a-zA-Z0-9]{10,}', 'api_Key:**REDACTED**'),
+    # Secret patterns
+    (r'secret["\']?\s*[:=]\s*["\']?[^\s\'"]{8,}', 'secret:**REDACTED**'),
+    (r'Secret["\']?\s*[:=]\s*["\']?[^\s\'"]{8,}', 'Secret:**REDACTED**'),
+]
+
+
+def _sanitize_sensitive_data(text: str) -> str:
+    """
+    Sanitize sensitive data from text before logging or serialization.
+
+    This function applies regex patterns to detect and redact:
+    - Stripe API keys (sk_test_, sk_live_, rk_test_, rk_live_)
+    - Bearer tokens and authentication tokens
+    - Passwords in various formats
+    - Generic API keys and secrets
+
+    Args:
+        text: The text to sanitize
+
+    Returns:
+        Sanitized text with sensitive data replaced by redaction markers
+
+    Example:
+        >>> _sanitize_sensitive_data("API key: sk_test_51AbC123xyz")
+        'API key: **REDACTED_API_KEY**'
+        >>> _sanitize_sensitive_data("password: SuperSecret123!")
+        'password: **REDACTED**'
+    """
+    if not isinstance(text, str):
+        return text
+
+    sanitized = text
+    for pattern, replacement in SENSITIVE_PATTERNS:
+        sanitized = re.sub(pattern, replacement, sanitized, flags=re.IGNORECASE)
+
+    return sanitized
 
 
 # ============================================================================
@@ -65,12 +129,22 @@ class StripeServiceError(Exception):
         """
         Convert exception to dictionary for logging/serialization.
 
+        SECURITY: Sensitive data (API keys, passwords, tokens) is automatically
+        redacted from the message before serialization to prevent credential
+        leakage in logs and error responses.
+
         Returns:
-            Dictionary containing error type, message, and context
+            Dictionary containing error type, sanitized message, and context
+
+        Example:
+            >>> exc = StripeServiceError("Failed with API key: sk_test_51AbC123xyz")
+            >>> exc.to_dict()
+            {'error_type': 'StripeServiceError',
+             'message': 'Failed with API key: **REDACTED_API_KEY**'}
         """
         return {
             "error_type": self.__class__.__name__,
-            "message": self.message,
+            "message": _sanitize_sensitive_data(self.message),
         }
 
 
