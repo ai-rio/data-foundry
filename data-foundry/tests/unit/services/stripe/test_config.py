@@ -34,6 +34,8 @@ from src.services.stripe.config import (
     IdempotencyConfig,
 )
 
+from src.services.stripe.types import SubscriptionTier, PriceType
+
 
 # ============================================================================
 # Security Test Fixtures
@@ -684,6 +686,195 @@ class TestMeterTypeEnum:
 
 
 # ============================================================================
+# Subscription Tier and Price Type Enum Tests (P3-003)
+# ============================================================================
+
+class TestSubscriptionTierEnum:
+    """Test SubscriptionTier enum for P3-003."""
+
+    def test_gold_value(self):
+        """Test GOLD enum value."""
+        assert SubscriptionTier.GOLD.value == "gold"
+
+    def test_silver_value(self):
+        """Test SILVER enum value."""
+        assert SubscriptionTier.SILVER.value == "silver"
+
+    def test_bronze_value(self):
+        """Test BRONZE enum value."""
+        assert SubscriptionTier.BRONZE.value == "bronze"
+
+    def test_enum_is_string(self):
+        """Test that SubscriptionTier is a string enum."""
+        assert isinstance(SubscriptionTier.GOLD, str)
+        assert isinstance(SubscriptionTier.SILVER, str)
+        assert isinstance(SubscriptionTier.BRONZE, str)
+
+
+class TestPriceTypeEnum:
+    """Test PriceType enum for P3-003."""
+
+    def test_ai_labels_value(self):
+        """Test AI_LABELS enum value."""
+        assert PriceType.AI_LABELS.value == "ai_labels"
+
+    def test_human_audits_value(self):
+        """Test HUMAN_AUDITS enum value."""
+        assert PriceType.HUMAN_AUDITS.value == "human_audits"
+
+    def test_platform_fee_value(self):
+        """Test PLATFORM_FEE enum value."""
+        assert PriceType.PLATFORM_FEE.value == "platform_fee"
+
+    def test_enum_is_string(self):
+        """Test that PriceType is a string enum."""
+        assert isinstance(PriceType.AI_LABELS, str)
+        assert isinstance(PriceType.HUMAN_AUDITS, str)
+        assert isinstance(PriceType.PLATFORM_FEE, str)
+
+
+# ============================================================================
+# Price ID Configuration Tests (P3-003)
+# ============================================================================
+
+class TestPriceIdConfiguration:
+    """Test price ID management for P3-003."""
+
+    def test_get_gold_ai_labels_price_id(self, clean_env):
+        """Get Gold tier AI labels price ID."""
+        os.environ["STRIPE_GOLD_AI_LABELS_PRICE_ID"] = "price_gold_ai_123"
+
+        config = StripeConfig()
+        price_id = config.get_price_id(SubscriptionTier.GOLD, PriceType.AI_LABELS)
+
+        assert price_id == "price_gold_ai_123"
+
+    def test_get_silver_human_audits_price_id(self, clean_env):
+        """Get Silver tier human audits price ID."""
+        os.environ["STRIPE_SILVER_HUMAN_AUDITS_PRICE_ID"] = "price_silver_human_456"
+
+        config = StripeConfig()
+        price_id = config.get_price_id(SubscriptionTier.SILVER, PriceType.HUMAN_AUDITS)
+
+        assert price_id == "price_silver_human_456"
+
+    def test_get_bronze_platform_fee_price_id(self, clean_env):
+        """Get Bronze tier platform fee price ID."""
+        os.environ["STRIPE_BRONZE_PLATFORM_FEE_PRICE_ID"] = "price_bronze_platform_789"
+
+        config = StripeConfig()
+        price_id = config.get_price_id(SubscriptionTier.BRONZE, PriceType.PLATFORM_FEE)
+
+        assert price_id == "price_bronze_platform_789"
+
+    def test_get_all_gold_prices(self, clean_env):
+        """Get all Gold tier price IDs."""
+        os.environ["STRIPE_GOLD_AI_LABELS_PRICE_ID"] = "price_gold_ai"
+        os.environ["STRIPE_GOLD_HUMAN_AUDITS_PRICE_ID"] = "price_gold_human"
+        os.environ["STRIPE_GOLD_PLATFORM_FEE_PRICE_ID"] = "price_gold_platform"
+
+        config = StripeConfig()
+
+        assert config.get_price_id(SubscriptionTier.GOLD, PriceType.AI_LABELS) == "price_gold_ai"
+        assert config.get_price_id(SubscriptionTier.GOLD, PriceType.HUMAN_AUDITS) == "price_gold_human"
+        assert config.get_price_id(SubscriptionTier.GOLD, PriceType.PLATFORM_FEE) == "price_gold_platform"
+
+    def test_get_all_silver_prices(self, clean_env):
+        """Get all Silver tier price IDs."""
+        os.environ["STRIPE_SILVER_AI_LABELS_PRICE_ID"] = "price_silver_ai"
+        os.environ["STRIPE_SILVER_HUMAN_AUDITS_PRICE_ID"] = "price_silver_human"
+        os.environ["STRIPE_SILVER_PLATFORM_FEE_PRICE_ID"] = "price_silver_platform"
+
+        config = StripeConfig()
+
+        assert config.get_price_id(SubscriptionTier.SILVER, PriceType.AI_LABELS) == "price_silver_ai"
+        assert config.get_price_id(SubscriptionTier.SILVER, PriceType.HUMAN_AUDITS) == "price_silver_human"
+        assert config.get_price_id(SubscriptionTier.SILVER, PriceType.PLATFORM_FEE) == "price_silver_platform"
+
+    def test_get_all_bronze_prices(self, clean_env):
+        """Get all Bronze tier price IDs."""
+        os.environ["STRIPE_BRONZE_AI_LABELS_PRICE_ID"] = "price_bronze_ai"
+        os.environ["STRIPE_BRONZE_HUMAN_AUDITS_PRICE_ID"] = "price_bronze_human"
+        os.environ["STRIPE_BRONZE_PLATFORM_FEE_PRICE_ID"] = "price_bronze_platform"
+
+        config = StripeConfig()
+
+        assert config.get_price_id(SubscriptionTier.BRONZE, PriceType.AI_LABELS) == "price_bronze_ai"
+        assert config.get_price_id(SubscriptionTier.BRONZE, PriceType.HUMAN_AUDITS) == "price_bronze_human"
+        assert config.get_price_id(SubscriptionTier.BRONZE, PriceType.PLATFORM_FEE) == "price_bronze_platform"
+
+    def test_get_nonexistent_price_id(self):
+        """Get a price ID that doesn't exist (not configured)."""
+        config = StripeConfig(price_ids={})
+
+        price_id = config.get_price_id(SubscriptionTier.GOLD, PriceType.AI_LABELS)
+        assert price_id is None
+
+    def test_is_price_configured_true(self, clean_env):
+        """Check if price is configured (positive case)."""
+        os.environ["STRIPE_GOLD_AI_LABELS_PRICE_ID"] = "price_123"
+
+        config = StripeConfig()
+        assert config.is_price_configured(SubscriptionTier.GOLD, PriceType.AI_LABELS) is True
+
+    def test_is_price_configured_false(self):
+        """Check if price is configured (negative case)."""
+        config = StripeConfig(price_ids={})
+
+        assert config.is_price_configured(SubscriptionTier.GOLD, PriceType.AI_LABELS) is False
+
+    def test_is_price_configured_empty_string(self, clean_env):
+        """Check that empty string price ID is not configured."""
+        os.environ["STRIPE_GOLD_AI_LABELS_PRICE_ID"] = ""
+
+        config = StripeConfig()
+        assert config.is_price_configured(SubscriptionTier.GOLD, PriceType.AI_LABELS) is False
+
+    def test_price_ids_loaded_in_post_init(self, clean_env):
+        """Test that price IDs are loaded in __post_init__."""
+        os.environ["STRIPE_GOLD_AI_LABELS_PRICE_ID"] = "price_gold"
+        os.environ["STRIPE_SILVER_AI_LABELS_PRICE_ID"] = "price_silver"
+        os.environ["STRIPE_BRONZE_AI_LABELS_PRICE_ID"] = "price_bronze"
+
+        config = StripeConfig(price_ids={})
+
+        # __post_init__ should populate price_ids
+        assert isinstance(config.price_ids, dict)
+        assert "gold" in config.price_ids
+        assert "silver" in config.price_ids
+        assert "bronze" in config.price_ids
+
+        # Check nested structure
+        assert "ai_labels" in config.price_ids["gold"]
+        assert "human_audits" in config.price_ids["gold"]
+        assert "platform_fee" in config.price_ids["gold"]
+
+    def test_price_ids_nested_structure(self, clean_env):
+        """Test that price_ids has correct nested structure."""
+        os.environ["STRIPE_GOLD_AI_LABELS_PRICE_ID"] = "price_1"
+        os.environ["STRIPE_GOLD_HUMAN_AUDITS_PRICE_ID"] = "price_2"
+        os.environ["STRIPE_GOLD_PLATFORM_FEE_PRICE_ID"] = "price_3"
+
+        config = StripeConfig()
+
+        # Check nested dict structure: {tier: {price_type: price_id}}
+        assert isinstance(config.price_ids["gold"], dict)
+        assert config.price_ids["gold"]["ai_labels"] == "price_1"
+        assert config.price_ids["gold"]["human_audits"] == "price_2"
+        assert config.price_ids["gold"]["platform_fee"] == "price_3"
+
+    def test_validation_with_missing_prices(self, clean_env):
+        """Test that validation warns (not errors) on missing price IDs."""
+        # Don't set any price IDs
+        config = StripeConfig()
+        errors = config.validate()
+
+        # Missing price IDs should NOT cause validation errors (like meter IDs)
+        # They're warnings for development
+        assert not any("price_id" in e.lower() for e in errors)
+
+
+# ============================================================================
 # Dataclass Field Tests
 # ============================================================================
 
@@ -706,6 +897,7 @@ class TestDataclassFields:
         assert hasattr(config, "max_idempotency_registry_size")
         assert hasattr(config, "max_batch_size")
         assert hasattr(config, "meter_ids")
+        assert hasattr(config, "price_ids")  # P3-003: Added price_ids field
         assert hasattr(config, "reserved_metadata_keys")
 
     def test_default_values(self):

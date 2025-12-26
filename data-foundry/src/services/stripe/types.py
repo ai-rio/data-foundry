@@ -37,6 +37,36 @@ class MeterType(str, Enum):
     HUMAN_AUDITS = "human_audits"
 
 
+class SubscriptionTier(str, Enum):
+    """Subscription pricing tiers for Data Foundry billing.
+
+    These correspond to Stripe price IDs configured in the environment:
+    - GOLD: Premium tier with lowest per-unit costs ($0.08 AI labels, $99 platform fee)
+    - SILVER: Mid-tier with balanced pricing ($0.10 AI labels, $49 platform fee)
+    - BRONZE: Basic tier with higher per-unit costs ($0.12 AI labels, $0 platform fee)
+
+    Task: P3-003 (Price ID Configuration)
+    """
+    GOLD = "gold"
+    SILVER = "silver"
+    BRONZE = "bronze"
+
+
+class PriceType(str, Enum):
+    """Price types for subscription components.
+
+    These correspond to the different billing components for each tier:
+    - AI_LABELS: Per-unit price for AI-powered data labeling
+    - HUMAN_AUDITS: Per-unit price for human review workflows (metered)
+    - PLATFORM_FEE: Recurring monthly platform access fee
+
+    Task: P3-003 (Price ID Configuration)
+    """
+    AI_LABELS = "ai_labels"
+    HUMAN_AUDITS = "human_audits"
+    PLATFORM_FEE = "platform_fee"
+
+
 class EventStatus(str, Enum):
     """Status of a meter event.
 
@@ -126,6 +156,19 @@ class IdempotencyConfig(TypedDict, total=False):
     max_key_length: int
     retention_hours: int
     max_registry_size: int
+
+
+class PriceIdMapping(TypedDict, total=False):
+    """Mapping of subscription tier and price type to Stripe price IDs.
+
+    Structure: {price_type: price_id}
+    Example: {"ai_labels": "price_123", "human_audits": "price_456", "platform_fee": "price_789"}
+
+    Task: P3-003 (Price ID Configuration)
+    """
+    ai_labels: str
+    human_audits: str
+    platform_fee: str
 
 
 # ============================================================================

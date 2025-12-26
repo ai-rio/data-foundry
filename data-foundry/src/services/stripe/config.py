@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from typing import Dict, Optional, List, TypedDict
 from enum import Enum
 
+from .types import MeterType, SubscriptionTier, PriceType, PriceIdMapping
+
 
 # ============================================================================
 # Enum Definitions
@@ -68,6 +70,21 @@ class StripeConfig:
         STRIPE_MAX_RETRY_DELAY_MS: Maximum delay in ms (default: 32000)
         STRIPE_AI_LABELS_METER_ID: Meter ID for AI labels (required for production)
         STRIPE_HUMAN_AUDITS_METER_ID: Meter ID for human audits (required for production)
+
+        Price IDs for Gold Tier:
+        STRIPE_GOLD_AI_LABELS_PRICE_ID: Price ID for Gold AI labels
+        STRIPE_GOLD_HUMAN_AUDITS_PRICE_ID: Price ID for Gold human audits
+        STRIPE_GOLD_PLATFORM_FEE_PRICE_ID: Price ID for Gold platform fee
+
+        Price IDs for Silver Tier:
+        STRIPE_SILVER_AI_LABELS_PRICE_ID: Price ID for Silver AI labels
+        STRIPE_SILVER_HUMAN_AUDITS_PRICE_ID: Price ID for Silver human audits
+        STRIPE_SILVER_PLATFORM_FEE_PRICE_ID: Price ID for Silver platform fee
+
+        Price IDs for Bronze Tier:
+        STRIPE_BRONZE_AI_LABELS_PRICE_ID: Price ID for Bronze AI labels
+        STRIPE_BRONZE_HUMAN_AUDITS_PRICE_ID: Price ID for Bronze human audits
+        STRIPE_BRONZE_PLATFORM_FEE_PRICE_ID: Price ID for Bronze platform fee
     """
 
     # API Configuration
@@ -97,17 +114,40 @@ class StripeConfig:
     # Meter Configuration
     meter_ids: Dict[str, str] = field(default_factory=dict)
 
+    # Price Configuration (Phase 3: Subscription Tiers)
+    price_ids: Dict[str, Dict[str, str]] = field(default_factory=dict)
+
     # Validation Configuration
     reserved_metadata_keys: frozenset = field(
         default_factory=lambda: frozenset({"value", "stripe_customer_id", "batch_id"})
     )
 
     def __post_init__(self):
-        """Load meter IDs from environment after initialization."""
+        """Load meter IDs and price IDs from environment after initialization."""
         if not self.meter_ids:
             self.meter_ids = {
                 MeterType.AI_LABELS.value: os.getenv("STRIPE_AI_LABELS_METER_ID", ""),
                 MeterType.HUMAN_AUDITS.value: os.getenv("STRIPE_HUMAN_AUDITS_METER_ID", ""),
+            }
+
+        if not self.price_ids:
+            # Load price IDs for each subscription tier
+            self.price_ids = {
+                SubscriptionTier.GOLD.value: {
+                    PriceType.AI_LABELS.value: os.getenv("STRIPE_GOLD_AI_LABELS_PRICE_ID", ""),
+                    PriceType.HUMAN_AUDITS.value: os.getenv("STRIPE_GOLD_HUMAN_AUDITS_PRICE_ID", ""),
+                    PriceType.PLATFORM_FEE.value: os.getenv("STRIPE_GOLD_PLATFORM_FEE_PRICE_ID", ""),
+                },
+                SubscriptionTier.SILVER.value: {
+                    PriceType.AI_LABELS.value: os.getenv("STRIPE_SILVER_AI_LABELS_PRICE_ID", ""),
+                    PriceType.HUMAN_AUDITS.value: os.getenv("STRIPE_SILVER_HUMAN_AUDITS_PRICE_ID", ""),
+                    PriceType.PLATFORM_FEE.value: os.getenv("STRIPE_SILVER_PLATFORM_FEE_PRICE_ID", ""),
+                },
+                SubscriptionTier.BRONZE.value: {
+                    PriceType.AI_LABELS.value: os.getenv("STRIPE_BRONZE_AI_LABELS_PRICE_ID", ""),
+                    PriceType.HUMAN_AUDITS.value: os.getenv("STRIPE_BRONZE_HUMAN_AUDITS_PRICE_ID", ""),
+                    PriceType.PLATFORM_FEE.value: os.getenv("STRIPE_BRONZE_PLATFORM_FEE_PRICE_ID", ""),
+                },
             }
 
     @classmethod
@@ -194,6 +234,17 @@ class StripeConfig:
             # This is a warning, not an error - development may work without meter IDs
             pass  # Could log warning here
 
+        # Warn about missing price IDs (not an error for development)
+        missing_prices = []
+        for tier, tier_prices in self.price_ids.items():
+            for price_type, price_id in tier_prices.items():
+                if not price_id:
+                    missing_prices.append(f"{tier}.{price_type}")
+
+        if missing_prices:
+            # This is a warning, not an error - development may work without price IDs
+            pass  # Could log warning here
+
         return errors
 
     def get_retry_config(self) -> RetryConfig:
@@ -248,3 +299,42 @@ class StripeConfig:
             True if meter ID is configured and non-empty
         """
         return bool(self.get_meter_id(meter_type))
+
+    def get_price_id(self, tier: SubscriptionTier, price_type: PriceType) -> Optional[str]:
+        """
+        Get price ID for a subscription tier and price type.
+
+        Args:
+            tier: The SubscriptionTier enum value (GOLD, SILVER, BRONZE)
+            price_type: The PriceType enum value (AI_LABELS, HUMAN_AUDITS, PLATFORM_FEE)
+
+        Returns:
+            Price ID string or None if not configured
+
+        Example:
+            >>> config = StripeConfig.from_environment()
+            >>> gold_labels_price = config.get_price_id(SubscriptionTier.GOLD, PriceType.AI_LABELS)
+            >>> print(gold_labels_price)  # 'price_1SiGsmGgBK1ooXYFiTaAJTsg'
+        """
+        tier_prices = self.price_ids.get(tier.value, {})
+        price_id = tier_prices.get(price_type.value, "")
+        return price_id if price_id else None
+
+    def is_price_configured(self, tier: SubscriptionTier, price_type: PriceType) -> bool:
+        """
+        Check if a price type has a configured ID for a tier.
+
+        Args:
+            tier: The SubscriptionTier enum value (GOLD, SILVER, BRONZE)
+            price_type: The PriceType enum value (AI_LABELS, HUMAN_AUDITS, PLATFORM_FEE)
+
+        Returns:
+            True if price ID is configured and non-empty
+
+        Example:
+            >>> config = StripeConfig.from_environment()
+            >>> if config.is_price_configured(SubscriptionTier.GOLD, PriceType.AI_LABELS):
+            ...     print("Gold AI labels price is configured")
+        """
+        return bool(self.get_price_id(tier, price_type))
+
