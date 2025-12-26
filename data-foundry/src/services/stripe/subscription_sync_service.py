@@ -92,8 +92,8 @@ class SubscriptionDeletedHandler(WebhookEventHandler):
                 statement = select(StripeSubscription).where(
                     StripeSubscription.stripe_subscription_id == subscription_id
                 )
-                result = await session.exec(statement)
-                subscription = result.first()
+                result = await session.execute(statement)
+                subscription = result.scalars().first()
 
                 if subscription:
                     subscription.status = StripeSubscriptionStatus.CANCELED
@@ -130,8 +130,8 @@ class PaymentFailedHandler(WebhookEventHandler):
                 statement = select(StripeSubscription).where(
                     StripeSubscription.stripe_subscription_id == subscription_id
                 )
-                result = await session.exec(statement)
-                subscription = result.first()
+                result = await session.execute(statement)
+                subscription = result.scalars().first()
 
                 if subscription:
                     subscription.status = StripeSubscriptionStatus.PAST_DUE
@@ -230,7 +230,7 @@ class SubscriptionSyncService(SubscriptionSyncServiceProtocol):
 
         Example:
             async with self._get_session() as session:
-                result = await session.exec(statement)
+                result = await session.execute(statement)
         """
         session = await self._session_factory()
         try:
@@ -301,8 +301,8 @@ class SubscriptionSyncService(SubscriptionSyncServiceProtocol):
             statement = select(StripeSubscription).where(
                 StripeSubscription.stripe_subscription_id == stripe_subscription_id
             )
-            result = await session.exec(statement)
-            existing_subscription = result.first()
+            result = await session.execute(statement)
+            existing_subscription = result.scalars().first()
 
             # Extract data from Stripe response
             status_value = stripe_subscription.get("status", "incomplete")
