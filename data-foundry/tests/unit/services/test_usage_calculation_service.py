@@ -551,3 +551,198 @@ class TestEdgeCases:
         # Should complete quickly (< 1 second for 1000 records)
         assert elapsed < 1.0
         assert len(result) == 10  # 10 tenants
+
+
+# ============================================================================
+# P02-006: Additional Tests for 100% Coverage
+# Additional test cases to achieve 100% code coverage for usage calculation
+# ============================================================================
+
+class TestUsageCalculationServiceEdgeCasesP02006:
+    """
+    Additional tests for UsageCalculationService edge cases.
+    P02-006: Tests to achieve 100% coverage.
+    """
+
+    def test_calculate_usage_with_confidence_exactly_at_threshold(self, usage_service):
+        """Test confidence score exactly at threshold boundary."""
+        records = [
+            {"id": 1, "tenant_id": "tenant_001", "ai_confidence": 0.85},
+        ]
+
+        result = usage_service.calculate_usage_from_records(records, 0.85)
+
+        # Exactly at threshold should be counted as AI label
+        assert result["tenant_001"]["ai_labels"] == 1
+        assert result["tenant_001"]["human_audits"] == 0
+
+    def test_calculate_usage_with_boundary_confidence_values(self, usage_service):
+        """Test confidence at boundaries (0.0 and 1.0)."""
+        records = [
+            {"id": 1, "tenant_id": "tenant_001", "ai_confidence": 0.0},
+            {"id": 2, "tenant_id": "tenant_001", "ai_confidence": 1.0},
+        ]
+
+        result = usage_service.calculate_usage_from_records(records, 0.85)
+
+        # 0.0 is below threshold - human audit
+        # 1.0 is above threshold - AI label
+        assert result["tenant_001"]["ai_labels"] == 1
+        assert result["tenant_001"]["human_audits"] == 1
+
+    def test_calculate_usage_for_batch_with_empty_records(self, usage_service):
+        """Test batch calculation with empty records."""
+        result = usage_service.calculate_usage_for_batch_reporting(
+            records=[],
+            confidence_threshold=0.85
+        )
+
+        assert result["aggregations"] == []
+        assert result["total_tenants"] == 0
+        assert result["total_records"] == 0
+
+    def test_prepare_meter_events_batch_with_metadata_merge(self, usage_service):
+        """Test that custom metadata is properly merged."""
+        usage_calculation = {
+            "tenant_001": {"ai_labels": 10, "human_audits": 5}
+        }
+
+        custom_metadata = {"region": "us-east-1", "environment": "production"}
+
+        result = usage_service.prepare_meter_events_batch(
+            usage_calculation=usage_calculation,
+            batch_id="batch_001",
+            source="pipeline",
+            metadata=custom_metadata
+        )
+
+        # Check that custom metadata is included
+        for event in result["events"]:
+            assert event["metadata"]["region"] == "us-east-1"
+            assert event["metadata"]["environment"] == "production"
+            assert event["metadata"]["source"] == "pipeline"
+            assert event["metadata"]["batch_id"] == "batch_001"
+
+    def test_classify_confidence_with_string_zero(self, usage_service):
+        """Test confidence classification with string '0'."""
+        result = usage_service._classify_confidence("0", 0.85)
+        # String "0" is treated as human audit (type validation)
+        assert result == "human_audit"
+
+    def test_classify_confidence_with_boolean(self, usage_service):
+        """Test confidence classification with boolean values."""
+        result_true = usage_service._classify_confidence(True, 0.85)
+        result_false = usage_service._classify_confidence(False, 0.85)
+
+        # Booleans are instances of int in Python (True=1, False=0)
+        # True (1) is >= 0.85 threshold, so it's ai_label
+        # False (0) is below 0.85 threshold, so it's human_audit
+        assert result_true == "ai_label"
+        assert result_false == "human_audit"
+
+    def test_validate_inputs_with_confidence_at_boundaries(self, usage_service):
+        """Test validation with threshold at exact boundaries."""
+        records = [{"id": 1, "tenant_id": "t1", "ai_confidence": 0.5}]
+
+        # Should not raise for boundary values
+        usage_service.calculate_usage_from_records(records, confidence_threshold=0.0)
+        usage_service.calculate_usage_from_records(records, confidence_threshold=1.0)
+
+    def test_get_metrics_returns_expected_fields(self, usage_service):
+        """Test that get_metrics returns expected fields."""
+        metrics = usage_service.get_metrics()
+
+        assert "calculation_count" in metrics
+        assert "tenant_isolation_violations" in metrics
+        assert metrics["calculation_count"] == 0  # No calculations yet
+
+    def test_calculate_usage_increments_metrics_counter(self, usage_service):
+        """Test that calculations increment the metrics counter."""
+        records = [
+            {"id": 1, "tenant_id": "tenant_001", "ai_confidence": 0.9},
+        ]
+
+        usage_service.calculate_usage_from_records(records, 0.85)
+        metrics = usage_service.get_metrics()
+
+        assert metrics["calculation_count"] == 1
+
+
+# ============================================================================
+# P02-006: Additional Tests for 100% Coverage
+# Tests to cover missing lines identified in QA audit
+# ============================================================================
+
+class TestUsageCalculationServiceMissingCoverage:
+    """
+    Tests for missing coverage lines identified in QA audit for P02-006.
+    These tests cover edge cases that were not previously tested.
+    """
+
+    def test_calculate_usage_with_unexpected_exception_in_record_processing(self, usage_service):
+        """
+        Test handling of unexpected exceptions during record processing.
+
+        Given: Records that cause unexpected exceptions during processing
+        When: Calculating usage
+        Then: Exception is caught, logged, and record is skipped (lines 198-200)
+        """
+        records = [
+            {"id": 1, "tenant_id": "tenant_001", "ai_confidence": 0.9},
+            {"id": 2, "tenant_id": "tenant_001", "ai_confidence": 0.8},
+        ]
+
+        # Create a callable that will raise exception on second call
+        call_count = [0]
+
+        def mock_classify_with_exception(confidence, threshold):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return usage_service._classify_confidence.__wrapped__(confidence, threshold) if hasattr(usage_service._classify_confidence, '__wrapped__') else ("ai_label" if confidence >= threshold else "human_audit")
+            else:
+                raise Exception("Unexpected error")
+
+        # Patch the instance method
+        original_classify = usage_service._classify_confidence
+        usage_service._classify_confidence = mock_classify_with_exception
+
+        try:
+            result = usage_service.calculate_usage_from_records(records, 0.85)
+
+            # First record should succeed, second should be skipped
+            assert result["tenant_001"]["ai_labels"] == 1
+            assert result["tenant_001"]["human_audits"] == 0
+        finally:
+            # Restore original method
+            usage_service._classify_confidence = original_classify
+
+    def test_validate_inputs_with_invalid_confidence_threshold_type(self, usage_service):
+        """
+        Test validation with invalid confidence threshold types.
+
+        Given: confidence_threshold as string, list, dict
+        When: Calculating usage
+        Then: Raises UsageValidationError (line 398)
+        """
+        records = [
+            {"id": 1, "tenant_id": "tenant_001", "ai_confidence": 0.9},
+        ]
+
+        # Test with string
+        with pytest.raises(UsageValidationError) as exc_info:
+            usage_service.calculate_usage_from_records(records, confidence_threshold="0.85")
+        assert "numeric" in str(exc_info.value).lower()
+
+        # Test with list
+        with pytest.raises(UsageValidationError) as exc_info:
+            usage_service.calculate_usage_from_records(records, confidence_threshold=[0.85])
+        assert "numeric" in str(exc_info.value).lower()
+
+        # Test with dict
+        with pytest.raises(UsageValidationError) as exc_info:
+            usage_service.calculate_usage_from_records(records, confidence_threshold={"value": 0.85})
+        assert "numeric" in str(exc_info.value).lower()
+
+
+# Import unittest.mock for the test above
+import unittest.mock

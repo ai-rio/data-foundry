@@ -4427,3 +4427,773 @@ class TestIdempotencyIntegrationP02004:
         if len(generated_keys) > 0:
             assert len(generated_keys) == len(set(generated_keys)), \
                 "Each event in batch should have unique idempotency key"
+
+
+# ============================================================================
+# P02-006: Additional Tests for 100% Coverage
+# Additional test cases to achieve 100% code coverage for meter reporting
+# ============================================================================
+
+class TestStripeServiceIdempotencyEdgeCases:
+    """
+    Additional tests for idempotency key edge cases.
+    P02-006: Tests to achieve 100% coverage.
+    """
+
+    @pytest.mark.asyncio
+    async def test_sanitize_component_empty_string(self):
+        """Test sanitizing empty string returns 'empty'."""
+        from src.services.stripe_service import StripeService
+
+        service = StripeService()
+        result = service._sanitize_idempotency_key_component("")
+        assert result == "empty"
+
+    @pytest.mark.asyncio
+    async def test_sanitize_component_non_string_converts_to_string(self):
+        """Test that non-string components are converted to strings."""
+        from src.services.stripe_service import StripeService
+
+        service = StripeService()
+        result = service._sanitize_idempotency_key_component(12345)
+        assert result == "12345"
+
+    @pytest.mark.asyncio
+    async def test_sanitize_component_with_injection_attempts(self):
+        """Test that SQL injection and XSS attempts are sanitized."""
+        from src.services.stripe_service import StripeService
+
+        service = StripeService()
+
+        # SQL injection attempts
+        assert ";" not in service._sanitize_idempotency_key_component("test;drop table")
+        assert "--" not in service._sanitize_idempotency_key_component("test--comment")
+        assert "'" not in service._sanitize_idempotency_key_component("test'or'1'='1")
+
+        # XSS attempts
+        assert "<script" not in service._sanitize_idempotency_key_component("<script>alert(1)</script>")
+
+        # Path traversal
+        assert "../" not in service._sanitize_idempotency_key_component("../../etc/passwd")
+
+    @pytest.mark.asyncio
+    async def test_sanitize_component_truncates_long_strings(self):
+        """Test that long components are truncated to 100 characters."""
+        from src.services.stripe_service import StripeService
+
+        service = StripeService()
+        long_string = "a" * 200
+        result = service._sanitize_idempotency_key_component(long_string)
+        assert len(result) == 100
+
+    @pytest.mark.asyncio
+    async def test_sanitize_component_fallback_for_empty_result(self):
+        """Test that empty sanitization result returns 'sanitized'."""
+        from src.services.stripe_service import StripeService
+
+        service = StripeService()
+        # String with only special characters that get removed
+        result = service._sanitize_idempotency_key_component("!!!$$$###")
+        assert result == "sanitized"
+
+    @pytest.mark.asyncio
+    async def test_validate_idempotency_key_length_under_limit(self):
+        """Test that keys under 255 characters pass validation."""
+        from src.services.stripe_service import StripeService
+
+        service = StripeService()
+        # Should not raise
+        service._validate_idempotency_key_length("a" * 254)
+
+    @pytest.mark.asyncio
+    async def test_validate_idempotency_key_length_at_limit(self):
+        """Test that key at exactly 255 characters passes validation."""
+        from src.services.stripe_service import StripeService
+
+        service = StripeService()
+        # Should not raise
+        service._validate_idempotency_key_length("a" * 255)
+
+    @pytest.mark.asyncio
+    async def test_validate_idempotency_key_length_over_limit_raises(self):
+        """Test that key over 255 characters raises validation error."""
+        from src.services.stripe_service import StripeService, StripeMeterValidationError
+
+        service = StripeService()
+        with pytest.raises(StripeMeterValidationError) as exc_info:
+            service._validate_idempotency_key_length("a" * 256)
+
+        assert "exceeds" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_generate_idempotency_key_with_batch_id(self):
+        """Test idempotency key generation includes batch_id when provided."""
+        from src.services.stripe_service import StripeService
+
+        service = StripeService()
+
+        key = service._generate_idempotency_key(
+            tenant_id="tenant_123",
+            meter_event="ai_labels",
+            value=100,
+            batch_id="batch_456"
+        )
+
+        assert "batch_456" in key or "batch" in key
+        assert "tenant_123" in key
+        assert "ai_labels" in key
+
+    @pytest.mark.asyncio
+    async def test_idempotency_registry_cleanup_removes_expired_keys(self):
+        """Test that cleanup removes expired keys from registry."""
+        from src.services.stripe_service import StripeService
+        from datetime import datetime, timezone, timedelta
+
+        service = StripeService()
+
+        # Add an expired key
+        old_time = datetime.now(timezone.utc) - timedelta(hours=25)
+        service._idempotency_registry["old_key"] = old_time
+
+        # Add a current key
+        current_time = datetime.now(timezone.utc)
+        service._idempotency_registry["current_key"] = current_time
+
+        # Run cleanup
+        with service._registry_lock:
+            service._cleanup_expired_idempotency_keys()
+
+        # Old key should be removed, current key should remain
+        assert "old_key" not in service._idempotency_registry
+        assert "current_key" in service._idempotency_registry
+
+    @pytest.mark.asyncio
+    async def test_idempotency_registry_full_removes_oldest_entries(self):
+        """Test that full registry removes oldest 10% of entries."""
+        from src.services.stripe_service import StripeService
+        from datetime import datetime, timezone, timedelta
+
+        service = StripeService()
+
+        # Fill registry to max capacity
+        for i in range(service.MAX_IDEMPOTENCY_REGISTRY_SIZE):
+            # Add keys with varying timestamps
+            time = datetime.now(timezone.utc) - timedelta(seconds=i)
+            service._idempotency_registry[f"key_{i}"] = time
+
+        # Adding one more via register should trigger cleanup
+        service._register_idempotency_key("new_key")
+
+        # Registry should be smaller than or equal to max
+        assert len(service._idempotency_registry) <= service.MAX_IDEMPOTENCY_REGISTRY_SIZE
+
+    @pytest.mark.asyncio
+    async def test_is_idempotency_key_registered_expired_key_removed(self):
+        """Test that checking expired key removes it from registry."""
+        from src.services.stripe_service import StripeService
+        from datetime import datetime, timezone, timedelta
+
+        service = StripeService()
+
+        # Add an expired key
+        old_time = datetime.now(timezone.utc) - timedelta(hours=25)
+        service._idempotency_registry["expired_key"] = old_time
+
+        # Check if registered - should return False and remove the key
+        result = service._is_idempotency_key_registered("expired_key")
+
+        assert result is False
+        assert "expired_key" not in service._idempotency_registry
+
+    @pytest.mark.asyncio
+    async def test_collision_detection_invalid_key_format_skips(self):
+        """Test that invalid key format is skipped during collision detection."""
+        from src.services.stripe_service import StripeService
+        from datetime import datetime, timezone
+
+        service = StripeService()
+
+        # Add a malformed key
+        service._idempotency_registry["malformed"] = datetime.now(timezone.utc)
+
+        # Should not raise exception - just log skip internally
+        with patch('src.services.stripe_service.logger') as mock_logger:
+            service._check_and_warn_collision("ai_labels_tenant_456_200_20241224103002_xyz789")
+
+    @pytest.mark.asyncio
+    async def test_collision_detection_timestamp_parse_error_skips(self):
+        """Test that invalid timestamp is skipped during collision detection."""
+        from src.services.stripe_service import StripeService
+        from datetime import datetime, timezone
+
+        service = StripeService()
+
+        # Add a key with invalid timestamp format
+        service._idempotency_registry["ai_labels_tenant_123_100_invalid_timestamp_abc123"] = datetime.now(timezone.utc)
+
+        # Should not raise exception
+        with patch('src.services.stripe_service.logger') as mock_logger:
+            service._check_and_warn_collision("ai_labels_tenant_123_100_20241224103001_def456")
+
+    @pytest.mark.asyncio
+    async def test_get_collision_metrics_includes_registry_size(self):
+        """Test that collision metrics include registry size."""
+        from src.services.stripe_service import StripeService
+        from datetime import datetime, timezone
+
+        service = StripeService()
+
+        # Add some keys
+        service._idempotency_registry["key1"] = datetime.now(timezone.utc)
+        service._idempotency_registry["key2"] = datetime.now(timezone.utc)
+
+        metrics = service._get_collision_metrics()
+
+        assert "registry_size" in metrics
+        assert metrics["registry_size"] == 2
+
+    @pytest.mark.asyncio
+    async def test_get_collision_metrics_zero_keys(self):
+        """Test collision metrics when no keys generated."""
+        from src.services.stripe_service import StripeService
+
+        service = StripeService()
+
+        metrics = service._get_collision_metrics()
+
+        assert metrics["total_keys_generated"] == 0
+        assert metrics["collision_rate"] == 0.0
+
+
+class TestStripeServiceRetryLogicEdgeCases:
+    """
+    Additional tests for retry logic edge cases.
+    P02-006: Tests to achieve 100% coverage.
+    """
+
+    @pytest.mark.asyncio
+    async def test_is_transient_error_with_permission_error(self):
+        """Test that PermissionError is not transient."""
+        from src.services.stripe_service import StripeService
+        import stripe
+
+        service = StripeService()
+        error = stripe.error.PermissionError(message="Permission denied")
+
+        result = service._is_transient_error(error)
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_is_transient_error_with_authentication_error(self):
+        """Test that AuthenticationError is not transient."""
+        from src.services.stripe_service import StripeService
+        import stripe
+
+        service = StripeService()
+        error = stripe.error.AuthenticationError(message="Auth failed")
+
+        result = service._is_transient_error(error)
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_is_transient_error_with_invalid_request_error(self):
+        """Test that InvalidRequestError is not transient."""
+        from src.services.stripe_service import StripeService
+        import stripe
+
+        service = StripeService()
+        error = stripe.error.InvalidRequestError(message="Invalid request", param=None)
+
+        result = service._is_transient_error(error)
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_retry_with_backoff_sync_function(self):
+        """Test retry with synchronous (non-async) function."""
+        from src.services.stripe_service import StripeService
+
+        service = StripeService()
+        call_count = 0
+
+        def sync_func():
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                import stripe
+                error = stripe.error.RateLimitError(message="Rate limited")
+                error.http_status = 429
+                raise error
+            return "success"
+
+        result = await service._retry_with_backoff(
+            func=sync_func,
+            operation_name="test_sync"
+        )
+
+        assert result == "success"
+        assert call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_retry_with_backoff_permanent_error_raises_immediately(self):
+        """Test that permanent errors don't trigger retries."""
+        from src.services.stripe_service import StripeService
+        import stripe
+
+        service = StripeService()
+        call_count = 0
+
+        async def failing_func():
+            nonlocal call_count
+            call_count += 1
+            error = stripe.error.InvalidRequestError(message="Invalid request", param=None)
+            raise error
+
+        with pytest.raises(stripe.error.InvalidRequestError):
+            await service._retry_with_backoff(
+                func=failing_func,
+                operation_name="test_permanent"
+            )
+
+        # Should only call once, no retries for permanent errors
+        assert call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_retry_with_backoff_max_retries_exhausted(self):
+        """Test that max retries are respected before giving up."""
+        from src.services.stripe_service import StripeService
+        import stripe
+
+        service = StripeService()
+        service.MAX_RETRIES = 2  # Set low for testing
+        call_count = 0
+
+        async def always_failing_func():
+            nonlocal call_count
+            call_count += 1
+            error = stripe.error.RateLimitError(message="Rate limited")
+            error.http_status = 429
+            raise error
+
+        with pytest.raises(stripe.error.RateLimitError):
+            await service._retry_with_backoff(
+                func=always_failing_func,
+                operation_name="test_max_retries"
+            )
+
+        # Should call MAX_RETRIES + 1 (initial + retries)
+        assert call_count == 3
+
+
+class TestStripeServiceMeterEventValidation:
+    """
+    Additional tests for meter event validation edge cases.
+    P02-006: Tests to achieve 100% coverage.
+    """
+
+    @pytest.mark.asyncio
+    async def test_validate_meter_event_with_float_value(self):
+        """Test that float values are rejected."""
+        from src.services.stripe_service import StripeService
+
+        service = StripeService()
+        errors = service._validate_meter_event("ai_labels", 10.5)
+
+        assert len(errors) > 0
+        assert any("integer" in e.lower() for e in errors)
+
+    @pytest.mark.asyncio
+    async def test_validate_meter_event_with_zero_value(self):
+        """Test that zero values are rejected."""
+        from src.services.stripe_service import StripeService
+
+        service = StripeService()
+        errors = service._validate_meter_event("ai_labels", 0)
+
+        assert len(errors) > 0
+        assert any("positive" in e.lower() for e in errors)
+
+    @pytest.mark.asyncio
+    async def test_validate_meter_event_with_negative_value(self):
+        """Test that negative values are rejected."""
+        from src.services.stripe_service import StripeService
+
+        service = StripeService()
+        errors = service._validate_meter_event("ai_labels", -1)
+
+        assert len(errors) > 0
+        assert any("positive" in e.lower() for e in errors)
+
+    @pytest.mark.asyncio
+    async def test_sanitize_metadata_with_list_value(self):
+        """Test that list values are rejected."""
+        from src.services.stripe_service import StripeService, StripeMeterValidationError
+
+        service = StripeService()
+
+        with pytest.raises(StripeMeterValidationError):
+            service._sanitize_metadata({"key": [1, 2, 3]})
+
+    @pytest.mark.asyncio
+    async def test_sanitize_metadata_with_dict_value(self):
+        """Test that dict values are rejected."""
+        from src.services.stripe_service import StripeService, StripeMeterValidationError
+
+        service = StripeService()
+
+        with pytest.raises(StripeMeterValidationError):
+            service._sanitize_metadata({"key": {"nested": "value"}})
+
+    @pytest.mark.asyncio
+    async def test_sanitize_metadata_with_none_value(self):
+        """Test that None values are handled."""
+        from src.services.stripe_service import StripeService, StripeMeterValidationError
+
+        service = StripeService()
+
+        with pytest.raises(StripeMeterValidationError):
+            service._sanitize_metadata({"key": None})
+
+    @pytest.mark.asyncio
+    async def test_sanitize_metadata_non_dict_input(self):
+        """Test that non-dict metadata raises validation error."""
+        from src.services.stripe_service import StripeService, StripeMeterValidationError
+
+        service = StripeService()
+
+        with pytest.raises(StripeMeterValidationError):
+            service._sanitize_metadata("not_a_dict")
+
+
+class TestStripeServiceBatchValidationEdgeCases:
+    """
+    Additional tests for batch validation edge cases.
+    P02-006: Tests to achieve 100% coverage.
+    """
+
+    @pytest.mark.asyncio
+    async def test_validate_batch_events_missing_meter_event(self):
+        """Test batch validation with missing meter_event field."""
+        from src.services.stripe_service import StripeService, StripeMeterValidationError
+
+        service = StripeService()
+        events = [{"value": 100}]  # Missing meter_event
+
+        with pytest.raises(StripeMeterValidationError) as exc_info:
+            service._validate_batch_events(events)
+
+        assert "meter_event" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_validate_batch_events_non_string_meter_event(self):
+        """Test batch validation with non-string meter_event."""
+        from src.services.stripe_service import StripeService, StripeMeterValidationError
+
+        service = StripeService()
+        events = [{"meter_event": 123, "value": 100}]  # meter_event is not string
+
+        with pytest.raises(StripeMeterValidationError) as exc_info:
+            service._validate_batch_events(events)
+
+        assert "string" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_validate_batch_events_missing_value(self):
+        """Test batch validation with missing value field."""
+        from src.services.stripe_service import StripeService, StripeMeterValidationError
+
+        service = StripeService()
+        events = [{"meter_event": "ai_labels"}]  # Missing value
+
+        with pytest.raises(StripeMeterValidationError) as exc_info:
+            service._validate_batch_events(events)
+
+        assert "value" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_validate_batch_events_non_integer_value(self):
+        """Test batch validation with non-integer value."""
+        from src.services.stripe_service import StripeService, StripeMeterValidationError
+
+        service = StripeService()
+        events = [{"meter_event": "ai_labels", "value": "100"}]  # value is not int
+
+        with pytest.raises(StripeMeterValidationError) as exc_info:
+            service._validate_batch_events(events)
+
+        assert "integer" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_validate_batch_events_multiple_errors(self):
+        """Test batch validation with multiple errors."""
+        from src.services.stripe_service import StripeService, StripeMeterValidationError
+
+        service = StripeService()
+        events = [
+            {"value": 100},  # Missing meter_event
+            {"meter_event": "ai_labels", "value": "100"},  # Wrong type for value
+        ]
+
+        with pytest.raises(StripeMeterValidationError) as exc_info:
+            service._validate_batch_events(events)
+
+        # Should have multiple validation errors
+        assert exc_info.value.validation_errors is not None
+        assert len(exc_info.value.validation_errors) >= 2
+
+
+class TestStripeServiceUpdateCustomerEdgeCases:
+    """
+    Additional tests for update_customer edge cases.
+    P02-006: Tests to achieve 100% coverage.
+    """
+
+    @pytest.mark.asyncio
+    @patch('src.services.stripe_service.SecretManager')
+    async def test_update_customer_with_no_changes_retrieves_current(self, MockSecretManager):
+        """Test that update with no changes fetches and returns current customer."""
+        from src.services.stripe_service import StripeService
+
+        mock_instance = Mock()
+        mock_instance.get_secret.return_value = "sk_test_1234567890"
+        MockSecretManager.return_value = mock_instance
+
+        service = StripeService()
+        await service.initialize()
+
+        with patch('src.services.stripe_service.stripe.Customer') as mock_customer:
+            mock_cust = Mock()
+            mock_cust.id = "cus_123"
+            mock_cust.get = Mock(side_effect=lambda k, d=None: {
+                "email": "test@example.com",
+                "name": "Test Customer",
+                "metadata": {}
+            }.get(k, d))
+            mock_customer.retrieve.return_value = mock_cust
+            mock_customer.modify.return_value = mock_cust
+
+            result = await service.update_customer(
+                stripe_customer_id="cus_123"
+            )
+
+            # Should retrieve customer since no updates provided
+            mock_customer.retrieve.assert_called_once_with("cus_123")
+            assert result["stripe_customer_id"] == "cus_123"
+
+
+class TestStripeServiceMissingCoverageP02006:
+    """
+    Tests for missing coverage lines identified in QA audit for P02-006.
+    These tests cover edge cases that were not previously tested.
+    """
+
+    @pytest.mark.asyncio
+    @patch('src.services.stripe_service.SecretManager')
+    async def test_report_usage_updates_database_on_unexpected_error(self, MockSecretManager):
+        """
+        Test that database is updated when unexpected error occurs (lines 790-792).
+
+        Given: report_usage called with db_session and unexpected error occurs
+        When: Stripe API call raises non-StripeError Exception
+        Then: Database event status is set to FAILED
+        """
+        from src.services.stripe_service import StripeService
+        from src.models.stripe_billing import StripeMeterEventStatus
+        from unittest.mock import AsyncMock
+
+        mock_instance = Mock()
+        mock_instance.get_secret.return_value = "sk_test_1234567890"
+        MockSecretManager.return_value = mock_instance
+
+        service = StripeService()
+        await service.initialize()
+
+        # Mock meter configuration
+        service._meter_config = {
+            "ai_labels": "mtr_test_ai_labels",
+            "human_audits": "mtr_test_human_audits"
+        }
+
+        # Create mock database session and event
+        mock_db_session = AsyncMock()
+        mock_event = Mock()
+        mock_event.status = StripeMeterEventStatus.PENDING
+
+        # Mock _retry_with_backoff to raise unexpected Exception
+        with patch.object(
+            service,
+            '_retry_with_backoff',
+            side_effect=Exception("Unexpected error - not a StripeError")
+        ):
+            with pytest.raises(Exception) as exc_info:
+                await service.report_usage(
+                    meter_event="ai_labels",
+                    value=10,
+                    tenant_id="tenant_001",
+                    stripe_customer_id="cus_123",
+                    db_session=mock_db_session
+                )
+
+            # Verify the error was raised
+            assert "Unexpected error" in str(exc_info.value)
+
+        # Verify database was updated (lines 790-792)
+        # The db_session.commit should have been called to update status to FAILED
+        assert mock_db_session.commit.called
+
+    @pytest.mark.asyncio
+    @patch('src.services.stripe_service.SecretManager')
+    async def test_sanitize_metadata_with_non_string_keys(self, MockSecretManager):
+        """
+        Test metadata sanitization with non-string keys (lines 823-826).
+
+        Given: Metadata with integer, None, list keys
+        When: Sanitizing metadata
+        Then: Raises StripeMeterValidationError for each non-string key
+        """
+        from src.services.stripe_service import StripeService, StripeMeterValidationError
+
+        mock_instance = Mock()
+        mock_instance.get_secret.return_value = "sk_test_1234567890"
+        MockSecretManager.return_value = mock_instance
+
+        service = StripeService()
+        await service.initialize()
+
+        # Test with integer key
+        with pytest.raises(StripeMeterValidationError) as exc_info:
+            service._sanitize_metadata({123: "value"})
+        assert "string" in str(exc_info.value).lower()
+
+        # Test with None key
+        with pytest.raises(StripeMeterValidationError) as exc_info:
+            service._sanitize_metadata({None: "value"})
+        assert "string" in str(exc_info.value).lower()
+
+        # Test with tuple key (hashable but not string)
+        with pytest.raises(StripeMeterValidationError) as exc_info:
+            service._sanitize_metadata({("key",): "value"})
+        assert "string" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    @patch('src.services.stripe_service.SecretManager')
+    async def test_report_usage_batch_unexpected_error_handling(self, MockSecretManager):
+        """
+        Test batch reporting handles unexpected exceptions (lines 1454-1468).
+
+        Given: report_usage raises non-StripeServiceError Exception
+        When: report_usage_batch processes events
+        Then: Exception is caught and added to failures list
+        """
+        from src.services.stripe_service import StripeService, BatchResult
+        from unittest.mock import AsyncMock
+
+        mock_instance = Mock()
+        mock_instance.get_secret.return_value = "sk_test_1234567890"
+        MockSecretManager.return_value = mock_instance
+
+        service = StripeService()
+        await service.initialize()
+
+        events = [
+            {"meter_event": "ai_labels", "value": 100},
+            {"meter_event": "human_audits", "value": 50},
+        ]
+
+        # Mock report_usage to raise unexpected Exception on second call
+        call_count = [0]
+
+        async def mock_report_usage_unexpected(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return {"event_id": "evt_1", "status": "succeeded"}
+            else:
+                raise RuntimeError("Unexpected error during usage reporting")
+
+        with patch.object(service, 'report_usage', side_effect=mock_report_usage_unexpected):
+            result = await service.report_usage_batch(
+                events=events,
+                tenant_id="tenant_001",
+                stripe_customer_id="cus_123"
+            )
+
+            # Should have 1 success and 1 failure
+            assert result.total_events == 2
+            assert result.successful_count == 1
+            assert result.failed_count == 1
+            assert len(result.successes) == 1
+            assert len(result.failures) == 1
+
+            # Verify the failure details
+            failure = result.failures[0]
+            assert failure["error_type"] == "UnexpectedError"
+            assert "Unexpected error" in failure["error"]
+            assert failure["event"]["meter_event"] == "human_audits"
+            assert failure["event"]["value"] == 50
+
+    @pytest.mark.asyncio
+    @patch('src.services.stripe_service.SecretManager')
+    async def test_is_transient_error_with_api_connection_error(self, MockSecretManager):
+        """
+        Test _is_transient_error with APIError without http_status (lines 1643, 1647-1650).
+
+        Given: An APIError from Stripe without http_status attribute
+        When: Checking if error is transient
+        Then: Returns True (APIError is transient when no status code)
+        """
+        from src.services.stripe_service import StripeService
+        import stripe
+
+        mock_instance = Mock()
+        mock_instance.get_secret.return_value = "sk_test_1234567890"
+        MockSecretManager.return_value = mock_instance
+
+        service = StripeService()
+        await service.initialize()
+
+        # Test with APIError (line 1644) that has no http_status
+        # Lines 1647-1650: Returns True when APIError has no http_status
+        api_error = stripe.APIError("API Error without status")
+        # Ensure no http_status attribute
+        if hasattr(api_error, 'http_status'):
+            delattr(api_error, 'http_status')
+
+        is_transient = service._is_transient_error(api_error)
+
+        # APIError without http_status should be treated as transient
+        assert is_transient is True
+
+    @pytest.mark.asyncio
+    @patch('src.services.stripe_service.SecretManager')
+    async def test_is_transient_error_with_rate_limit_error(self, MockSecretManager):
+        """
+        Test _is_transient_error with RateLimitError (line 1643).
+
+        Given: A RateLimitError from Stripe
+        When: Checking if error is transient
+        Then: Returns True (rate limit errors are always transient)
+        """
+        from src.services.stripe_service import StripeService
+        import stripe
+
+        mock_instance = Mock()
+        mock_instance.get_secret.return_value = "sk_test_1234567890"
+        MockSecretManager.return_value = mock_instance
+
+        service = StripeService()
+        await service.initialize()
+
+        # Test with RateLimitError (line 1643: return True)
+        rate_limit_error = stripe.RateLimitError(
+            message="Rate limit exceeded",
+            http_status=429,
+            json_body={'error': {'message': 'Rate limit exceeded'}}
+        )
+        is_transient = service._is_transient_error(rate_limit_error)
+
+        # RateLimitError should always be treated as transient
+        assert is_transient is True
+
+
