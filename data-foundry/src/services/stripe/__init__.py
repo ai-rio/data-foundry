@@ -2,14 +2,16 @@
 Stripe service module.
 
 This package contains the modular Stripe service implementation with separate
-concerns for customers, meter events, idempotency, retries, and validation.
+concerns for customers, meter events, idempotency, retries, validation, and
+batch processing.
 
 Public API:
 - Exceptions: Custom exception hierarchy for error handling
+- Services: BatchProcessor for batch meter event processing
 """
 
 # Version info
-__version__ = "2.5.1"
+__version__ = "2.5.3"
 
 # ============================================================================
 # Exception exports
@@ -31,6 +33,12 @@ from .exceptions import (
     StripeIdempotencyKeyTooLongError,
     StripeBatchError,
 )
+
+# ============================================================================
+# Service exports
+# ============================================================================
+
+from .batch_processor import BatchProcessor
 
 __all__ = [
     # Base exception
@@ -54,4 +62,6 @@ __all__ = [
     "StripeIdempotencyKeyTooLongError",
     # Batch errors
     "StripeBatchError",
+    # Services
+    "BatchProcessor",
 ]
