@@ -11,11 +11,12 @@ This module provides contracts for:
 - Webhook handling
 - Standard error responses
 
-All contracts use Pydantic for automatic validation and serialization.
+All contracts use Pydantic v2 for automatic validation and serialization.
+Updated for P4-004: Migrated from @validator to @field_validator (Pydantic v2)
 """
 
 from typing import Any, Dict, Optional, List
-from pydantic import BaseModel, Field, EmailStr, validator
+from pydantic import BaseModel, Field, EmailStr, field_validator
 from datetime import datetime
 from enum import Enum
 
@@ -77,8 +78,9 @@ class CreateCustomerRequest(BaseModel):
         example="Acme Corporation"
     )
 
-    @validator('name')
-    def validate_name(cls, v):
+    @field_validator('name')
+    @classmethod
+    def validate_name(cls, v: Optional[str]) -> Optional[str]:
         """Validate name doesn't contain malicious content."""
         if v and len(v.strip()) == 0:
             raise ValueError('Name cannot be empty or whitespace only')
@@ -112,8 +114,9 @@ class UpdateCustomerRequest(BaseModel):
         description="Additional customer metadata"
     )
 
-    @validator('name')
-    def validate_name(cls, v):
+    @field_validator('name')
+    @classmethod
+    def validate_name(cls, v: Optional[str]) -> Optional[str]:
         """Validate name doesn't contain malicious content."""
         if v and len(v.strip()) == 0:
             raise ValueError('Name cannot be empty or whitespace only')
@@ -137,7 +140,7 @@ class CreateSubscriptionRequest(BaseModel):
 
     stripe_customer_id: str = Field(
         ...,
-        min_length=1,
+        min_length=5,
         max_length=500,
         description="Stripe customer ID (cus_*)",
         example="cus_abc123"
@@ -150,7 +153,7 @@ class CreateSubscriptionRequest(BaseModel):
 
     price_id: Optional[str] = Field(
         None,
-        min_length=1,
+        min_length=7,
         max_length=500,
         description="Stripe price ID for the tier",
         example="price_abc123"
@@ -161,11 +164,20 @@ class CreateSubscriptionRequest(BaseModel):
         description="Whether subscription cancels at period end"
     )
 
-    @validator('stripe_customer_id')
-    def validate_customer_id(cls, v):
+    @field_validator('stripe_customer_id')
+    @classmethod
+    def validate_customer_id(cls, v: str) -> str:
         """Validate customer ID format."""
         if not v.startswith('cus_'):
-            raise ValueError('Invalid Stripe customer ID format')
+            raise ValueError('Invalid Stripe customer ID format (must start with cus_)')
+        return v
+
+    @field_validator('price_id')
+    @classmethod
+    def validate_price_id(cls, v: Optional[str]) -> Optional[str]:
+        """Validate price ID format if provided."""
+        if v and not v.startswith('price_'):
+            raise ValueError('Invalid Stripe price ID format (must start with price_)')
         return v
 
 
@@ -186,7 +198,7 @@ class UpdateSubscriptionRequest(BaseModel):
 
     price_id: Optional[str] = Field(
         None,
-        min_length=1,
+        min_length=7,
         max_length=500,
         description="New price ID for tier change"
     )
@@ -195,6 +207,14 @@ class UpdateSubscriptionRequest(BaseModel):
         None,
         description="Update cancellation preference"
     )
+
+    @field_validator('price_id')
+    @classmethod
+    def validate_price_id(cls, v: Optional[str]) -> Optional[str]:
+        """Validate price ID format if provided."""
+        if v and not v.startswith('price_'):
+            raise ValueError('Invalid Stripe price ID format (must start with price_)')
+        return v
 
 
 # =============================================================================
@@ -217,7 +237,9 @@ class CustomerResponse(BaseModel):
     tenant_id: str = Field(
         ...,
         description="Internal tenant identifier",
-        example="tenant_abc123"
+        example="tenant_abc123",
+        min_length=1,
+        max_length=255
     )
 
     stripe_customer_id: str = Field(
@@ -270,7 +292,9 @@ class SubscriptionResponse(BaseModel):
 
     tenant_id: str = Field(
         ...,
-        description="Internal tenant identifier"
+        description="Internal tenant identifier",
+        min_length=1,
+        max_length=255
     )
 
     stripe_subscription_id: str = Field(
@@ -316,7 +340,7 @@ class SubscriptionResponse(BaseModel):
 
     updated_at: datetime = Field(
         ...,
-        description="Last update timestamp"
+        description="Subscription update timestamp"
     )
 
 
@@ -508,7 +532,9 @@ class UsageSummaryResponse(BaseModel):
     tenant_id: str = Field(
         ...,
         description="Tenant identifier",
-        example="tenant_abc123"
+        example="tenant_abc123",
+        min_length=1,
+        max_length=255
     )
 
     period_start: Optional[datetime] = Field(

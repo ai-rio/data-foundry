@@ -3,14 +3,26 @@ FastAPI Dependencies Module.
 
 Contains common FastAPI dependency functions for authentication,
 authorization, and request processing.
+
+P4-005 Updates:
+- Added require_admin dependency with database verification
+- Added require_role dependency for role-based access control
 """
 
-from typing import Dict, Any
+from typing import Dict, Any, Optional
+import logging
 
 from fastapi import Depends, HTTPException, Request
 from fastapi import status
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from src.core.jwt_verifier import verify_jwt
+from src.database.connection import get_db_session
+from src.models.user import User, UserRole
+
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================================
@@ -154,3 +166,169 @@ def get_tenant_id(current_user: Dict[str, Any] = Depends(get_current_user)) -> s
         ```
     """
     return current_user.get("tenant_id")
+
+
+# ============================================================================
+# ADMIN AUTHORIZATION DEPENDENCIES (P4-005)
+# ============================================================================
+
+async def require_admin(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session)
+) -> User:
+    """
+    Verify that the current user has admin role in the database.
+
+    This dependency performs database verification of admin role to prevent
+    JWT tampering and ensure authorization is enforced at the database level.
+
+    Args:
+        current_user: Current user from JWT verification
+        session: Database session for querying user roles
+
+    Returns:
+        User object with admin role
+
+    Raises:
+        HTTPException 401: If user not found in database
+        HTTPException 403: If user does not have admin role
+
+    Usage:
+        ```python
+        @router.post("/admin-only")
+        async def admin_endpoint(admin_user: User = Depends(require_admin)):
+            return {"message": f"Hello, Admin {admin_user.email}"}
+        ```
+    """
+    user_id = current_user.get("sub")
+
+    if not user_id:
+        logger.warning("require_admin: No user_id in JWT payload")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid user token"
+        )
+
+    # Query database for user
+    query = select(User).where(User.user_id == user_id)
+    result = await session.execute(query)
+    user = result.scalar_one_or_none()
+
+    if not user:
+        logger.warning(f"require_admin: User {user_id} not found in database")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found"
+        )
+
+    # Verify admin role
+    if user.role != UserRole.ADMIN:
+        logger.warning(
+            f"require_admin: User {user_id} has role {user.role}, not admin"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required"
+        )
+
+    # Check user status
+    if user.status != "active":
+        logger.warning(
+            f"require_admin: User {user_id} has status {user.status}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User account is not active"
+        )
+
+    logger.info(f"require_admin: User {user_id} verified as admin")
+    return user
+
+
+async def require_role(
+    required_role: UserRole,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session)
+) -> User:
+    """
+    Verify that the current user has the required role in the database.
+
+    This dependency performs database verification of user roles to prevent
+    JWT tampering and ensure authorization is enforced at the database level.
+
+    Args:
+        required_role: Minimum role required for access
+        current_user: Current user from JWT verification
+        session: Database session for querying user roles
+
+    Returns:
+        User object with required role
+
+    Raises:
+        HTTPException 401: If user not found in database
+        HTTPException 403: If user does not have required role
+
+    Usage:
+        ```python
+        from src.models.user import UserRole
+
+        @router.post("/manager-only")
+        async def manager_endpoint(
+            user: User = Depends(lambda: require_role(UserRole.MANAGER))
+        ):
+            return {"message": f"Hello, Manager {user.email}"}
+        ```
+    """
+    user_id = current_user.get("sub")
+
+    if not user_id:
+        logger.warning(f"require_role: No user_id in JWT payload")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid user token"
+        )
+
+    # Query database for user
+    query = select(User).where(User.user_id == user_id)
+    result = await session.execute(query)
+    user = result.scalar_one_or_none()
+
+    if not user:
+        logger.warning(f"require_role: User {user_id} not found in database")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found"
+        )
+
+    # Define role hierarchy
+    role_hierarchy = {
+        UserRole.VIEWER: 0,
+        UserRole.ANALYST: 1,
+        UserRole.MANAGER: 2,
+        UserRole.ADMIN: 3,
+    }
+
+    user_level = role_hierarchy.get(user.role, -1)
+    required_level = role_hierarchy.get(required_role, -1)
+
+    if user_level < required_level:
+        logger.warning(
+            f"require_role: User {user_id} has role {user.role}, "
+            f"required {required_role}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Insufficient permissions. Role {required_role.value} required."
+        )
+
+    # Check user status
+    if user.status != "active":
+        logger.warning(
+            f"require_role: User {user_id} has status {user.status}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User account is not active"
+        )
+
+    return user

@@ -500,6 +500,358 @@ class StripeService(StripeServiceBase):
             raise StripeServiceError(f"Failed to delete customer: {e}") from e
 
     # ========================================================================
+    # Subscription CRUD Operations (P4-004)
+    # ========================================================================
+
+    async def create_subscription(
+        self,
+        stripe_customer_id: str,
+        tenant_id: str,
+        tier: str,
+        price_id: Optional[str] = None,
+        cancel_at_period_end: bool = False,
+        db_session: Optional[AsyncSession] = None,
+        metadata: Optional[Dict[str, str]] = None
+    ) -> Dict[str, Any]:
+        """
+        Create a Stripe subscription for a customer.
+
+        Creates a new subscription in Stripe and persists to database.
+        This replaces direct Stripe API calls in endpoints with proper facade.
+
+        Args:
+            stripe_customer_id: Stripe customer ID (cus_*)
+            tenant_id: Tenant identifier
+            tier: Subscription tier (starter, growth, enterprise)
+            price_id: Optional Stripe price ID for the tier
+            cancel_at_period_end: Whether to cancel at period end
+            db_session: Optional database session for persistence
+            metadata: Optional subscription metadata
+
+        Returns:
+            Dictionary with subscription details including:
+            - stripe_subscription_id: Stripe subscription ID
+            - status: Subscription status
+            - current_period_start: Billing period start
+            - current_period_end: Billing period end
+            - tier: Subscription tier
+
+        Raises:
+            StripeInitializationError: If service not initialized
+            StripeAPIError: If Stripe API call fails
+
+        Example:
+            >>> result = await service.create_subscription(
+            ...     stripe_customer_id="cus_123",
+            ...     tenant_id="tenant_abc",
+            ...     tier="growth",
+            ...     price_id="price_123",
+            ...     db_session=session
+            ... )
+        """
+        self._ensure_initialized()
+
+        try:
+            # Prepare subscription data
+            subscription_data = {
+                "customer": stripe_customer_id,
+                "cancel_at_period_end": cancel_at_period_end,
+                "metadata": {
+                    "tenant_id": tenant_id,
+                    "tier": tier,
+                    **(metadata or {})
+                }
+            }
+
+            # Add price if provided
+            if price_id:
+                subscription_data["items"] = [{"price": price_id}]
+
+            # Create subscription in Stripe
+            stripe_subscription = stripe.Subscription.create(**subscription_data)
+            logger.info(
+                f"Created Stripe subscription {stripe_subscription.id} "
+                f"for customer {stripe_customer_id}, tier: {tier}"
+            )
+
+            # Persist to database if session provided
+            if db_session:
+                from src.models.stripe_billing import create_stripe_subscription
+
+                db_subscription = await create_stripe_subscription(
+                    session=db_session,
+                    tenant_id=tenant_id,
+                    stripe_subscription_id=stripe_subscription.id,
+                    stripe_customer_id=stripe_customer_id,
+                    status=stripe_subscription.status,
+                    current_period_start=datetime.fromtimestamp(
+                        stripe_subscription.current_period_start,
+                        tz=timezone.utc
+                    ),
+                    current_period_end=datetime.fromtimestamp(
+                        stripe_subscription.current_period_end,
+                        tz=timezone.utc
+                    ),
+                    cancel_at_period_end=stripe_subscription.cancel_at_period_end,
+                    tier=tier
+                )
+                logger.info(f"Persisted subscription to database")
+
+            return {
+                "stripe_subscription_id": stripe_subscription.id,
+                "status": stripe_subscription.status,
+                "current_period_start": datetime.fromtimestamp(
+                    stripe_subscription.current_period_start,
+                    tz=timezone.utc
+                ),
+                "current_period_end": datetime.fromtimestamp(
+                    stripe_subscription.current_period_end,
+                    tz=timezone.utc
+                ),
+                "cancel_at_period_end": stripe_subscription.cancel_at_period_end,
+                "tier": tier
+            }
+
+        except stripe.error.StripeError as e:
+            logger.error(f"Stripe API error creating subscription: {e}")
+            raise StripeAPIError(
+                f"Failed to create subscription: {str(e)}",
+                stripe_error_type=type(e).__name__,
+                stripe_code=getattr(e, 'code', None)
+            ) from e
+
+        except Exception as e:
+            logger.error(f"Unexpected error creating subscription: {e}")
+            raise StripeServiceError(f"Failed to create subscription: {e}") from e
+
+    async def get_subscription_by_tenant(
+        self,
+        tenant_id: str,
+        db_session: AsyncSession
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Retrieve subscription by tenant_id from database.
+
+        Args:
+            tenant_id: Tenant identifier
+            db_session: Database session for query
+
+        Returns:
+            Dictionary with subscription data or None if not found
+
+        Example:
+            >>> subscription = await service.get_subscription_by_tenant(
+            ...     tenant_id="tenant_123",
+            ...     db_session=session
+            ... )
+        """
+        self._ensure_initialized()
+
+        try:
+            from src.models.stripe_billing import StripeSubscription
+
+            statement = select(StripeSubscription).where(
+                col(StripeSubscription.tenant_id) == tenant_id
+            )
+            result = await db_session.execute(statement)
+            db_subscription = result.scalar_one_or_none()
+
+            if not db_subscription:
+                logger.info(f"No subscription found for tenant {tenant_id}")
+                return None
+
+            return {
+                "tenant_id": db_subscription.tenant_id,
+                "stripe_subscription_id": db_subscription.stripe_subscription_id,
+                "stripe_customer_id": db_subscription.stripe_customer_id,
+                "status": db_subscription.status,
+                "tier": db_subscription.tier,
+                "current_period_start": db_subscription.current_period_start,
+                "current_period_end": db_subscription.current_period_end,
+                "cancel_at_period_end": db_subscription.cancel_at_period_end,
+                "created_at": db_subscription.created_at.isoformat() if db_subscription.created_at else None,
+                "updated_at": db_subscription.updated_at.isoformat() if db_subscription.updated_at else None
+            }
+
+        except Exception as e:
+            logger.error(f"Error retrieving subscription for tenant {tenant_id}: {e}")
+            raise StripeServiceError(f"Failed to retrieve subscription: {e}") from e
+
+    async def update_subscription(
+        self,
+        stripe_subscription_id: str,
+        cancel_at_period_end: Optional[bool] = None,
+        tier: Optional[str] = None,
+        price_id: Optional[str] = None,
+        db_session: Optional[AsyncSession] = None
+    ) -> Dict[str, Any]:
+        """
+        Update a Stripe subscription.
+
+        Updates subscription settings in Stripe and syncs to database.
+
+        Args:
+            stripe_subscription_id: Stripe subscription ID (sub_*)
+            cancel_at_period_end: Optional cancellation preference
+            tier: Optional new tier (requires price_id for changes)
+            price_id: Optional new price ID for tier changes
+            db_session: Optional database session for sync
+
+        Returns:
+            Updated subscription data dictionary
+
+        Raises:
+            StripeCustomerNotFoundError: If subscription doesn't exist
+            StripeAPIError: If Stripe API call fails
+
+        Example:
+            >>> subscription = await service.update_subscription(
+            ...     stripe_subscription_id="sub_123",
+            ...     cancel_at_period_end=True
+            ... )
+        """
+        self._ensure_initialized()
+
+        try:
+            # Prepare update data
+            update_data = {}
+            if cancel_at_period_end is not None:
+                update_data["cancel_at_period_end"] = cancel_at_period_end
+
+            # For tier changes, update subscription items
+            if tier and price_id:
+                update_data["items"] = [{"price": price_id}]
+
+            if not update_data:
+                logger.info(f"No updates provided for subscription {stripe_subscription_id}")
+                stripe_subscription = stripe.Subscription.retrieve(stripe_subscription_id)
+                return self._stripe_subscription_to_dict(stripe_subscription)
+
+            # Update in Stripe
+            stripe_subscription = stripe.Subscription.modify(
+                stripe_subscription_id,
+                **update_data
+            )
+            logger.info(f"Updated Stripe subscription {stripe_subscription_id}")
+
+            # Sync to database if session provided
+            if db_session:
+                from src.models.stripe_billing import StripeSubscription
+
+                statement = select(StripeSubscription).where(
+                    col(StripeSubscription.stripe_subscription_id) == stripe_subscription_id
+                )
+                result = await db_session.execute(statement)
+                db_subscription = result.scalar_one_or_none()
+
+                if db_subscription:
+                    if cancel_at_period_end is not None:
+                        db_subscription.cancel_at_period_end = cancel_at_period_end
+                    if tier:
+                        db_subscription.tier = tier
+                    db_subscription.updated_at = datetime.now(timezone.utc)
+                    await db_session.commit()
+                    logger.info(f"Synced subscription update to database")
+
+            return self._stripe_subscription_to_dict(stripe_subscription)
+
+        except stripe.error.InvalidRequestError as e:
+            if "No such subscription" in str(e):
+                logger.error(f"Subscription not found: {stripe_subscription_id}")
+                raise StripeCustomerNotFoundError(
+                    f"Stripe subscription not found: {stripe_subscription_id}",
+                    stripe_customer_id=stripe_subscription_id
+                ) from e
+            raise
+
+        except stripe.error.StripeError as e:
+            logger.error(f"Stripe API error updating subscription: {e}")
+            raise StripeAPIError(
+                f"Failed to update subscription: {str(e)}",
+                stripe_error_type=type(e).__name__,
+                stripe_code=getattr(e, 'code', None)
+            ) from e
+
+    async def cancel_subscription(
+        self,
+        stripe_subscription_id: str,
+        immediate: bool = False,
+        db_session: Optional[AsyncSession] = None
+    ) -> bool:
+        """
+        Cancel a Stripe subscription.
+
+        Cancels subscription in Stripe and updates database record.
+        Can cancel immediately or at period end.
+
+        Args:
+            stripe_subscription_id: Stripe subscription ID (sub_*)
+            immediate: Whether to cancel immediately (vs at period end)
+            db_session: Optional database session for sync
+
+        Returns:
+            True if cancellation was successful
+
+        Raises:
+            StripeAPIError: If Stripe API call fails
+
+        Example:
+            >>> success = await service.cancel_subscription(
+            ...     stripe_subscription_id="sub_123",
+            ...     immediate=False
+            ... )
+        """
+        self._ensure_initialized()
+
+        try:
+            if immediate:
+                # Cancel immediately
+                stripe_subscription = stripe.Subscription.delete(stripe_subscription_id)
+                status = "canceled"
+            else:
+                # Cancel at period end
+                stripe_subscription = stripe.Subscription.modify(
+                    stripe_subscription_id,
+                    cancel_at_period_end=True
+                )
+                status = stripe_subscription.status
+
+            logger.info(f"Canceled subscription {stripe_subscription_id} (immediate={immediate})")
+
+            # Update database if session provided
+            if db_session:
+                from src.models.stripe_billing import StripeSubscription
+
+                statement = select(StripeSubscription).where(
+                    col(StripeSubscription.stripe_subscription_id) == stripe_subscription_id
+                )
+                result = await db_session.execute(statement)
+                db_subscription = result.scalar_one_or_none()
+
+                if db_subscription:
+                    if immediate:
+                        db_subscription.status = status
+                    else:
+                        db_subscription.cancel_at_period_end = True
+                    db_subscription.updated_at = datetime.now(timezone.utc)
+                    await db_session.commit()
+                    logger.info(f"Updated subscription status in database")
+
+            return True
+
+        except stripe.error.StripeError as e:
+            logger.error(f"Stripe API error canceling subscription: {e}")
+            raise StripeAPIError(
+                f"Failed to cancel subscription: {str(e)}",
+                stripe_error_type=type(e).__name__,
+                stripe_code=getattr(e, 'code', None)
+            ) from e
+
+        except Exception as e:
+            logger.error(f"Unexpected error canceling subscription: {e}")
+            raise StripeServiceError(f"Failed to cancel subscription: {e}") from e
+
+    # ========================================================================
     # Meter Event Reporting
     # ========================================================================
 
@@ -1066,6 +1418,23 @@ class StripeService(StripeServiceBase):
             "name": stripe_customer.get("name"),
             "metadata": dict(stripe_customer.get("metadata", {})),
             "created": stripe_customer.get("created")
+        }
+
+    def _stripe_subscription_to_dict(self, stripe_subscription) -> Dict[str, Any]:
+        """Convert Stripe subscription object to dictionary."""
+        return {
+            "stripe_subscription_id": stripe_subscription.id,
+            "status": stripe_subscription.status,
+            "current_period_start": datetime.fromtimestamp(
+                stripe_subscription.current_period_start,
+                tz=timezone.utc
+            ),
+            "current_period_end": datetime.fromtimestamp(
+                stripe_subscription.current_period_end,
+                tz=timezone.utc
+            ),
+            "cancel_at_period_end": stripe_subscription.cancel_at_period_end,
+            "metadata": dict(stripe_subscription.get("metadata", {}))
         }
 
     # ========================================================================

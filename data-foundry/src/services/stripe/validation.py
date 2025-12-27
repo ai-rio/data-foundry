@@ -72,6 +72,13 @@ class ValidationService(ValidationServiceProtocol):
         r'</script>',      # XSS closing
         r'=',              # Could be used in injection
         r'\$',             # Standalone dollar sign (variable expansion)
+        r'\u202E',         # RTL override (Unicode homoglyph attack)
+        r'\u202D',         # LTR override (Unicode homoglyph attack)
+        r'\u200E',         # LTR mark (Unicode zero-width character)
+        r'\u200F',         # RTL mark (Unicode zero-width character)
+        r'\u200B',         # Zero-width space
+        r'\u200C',         # Zero-width non-joiner
+        r'\u200D',         # Zero-width joiner
     ]
 
     def __init__(self, config: StripeConfig):

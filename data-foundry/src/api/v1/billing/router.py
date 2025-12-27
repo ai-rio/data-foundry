@@ -15,6 +15,12 @@ Best Practices:
 - Processes events asynchronously (prevents timeouts)
 - Logs all events for monitoring and debugging
 - Uses WebhookEventHandler for event processing (P4-003)
+
+P4-004 Updates:
+- Added rate limiting to endpoints
+- Implemented consistent error handling
+- Added transaction rollback support
+- Migrated to Pydantic v2 field_validator
 """
 
 import json
@@ -22,6 +28,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 from enum import Enum
+from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, Request, HTTPException, status, Depends, Query
 from fastapi.responses import JSONResponse
@@ -62,6 +69,7 @@ from src.api.v1.billing.contracts import (
     BILLING_ENDPOINT_DESCRIPTIONS,
 )
 from src.api.v1.billing.webhook_handlers import WebhookEventHandler
+from src.core.validators import validate_tenant_id, validate_iso8601_datetime
 from src.models.stripe_billing import (
     StripeMeterEvent,
     StripeMeterEventStatus,
@@ -71,13 +79,55 @@ from src.models.stripe_billing import (
 from src.models.tenant import Tenant
 from src.api.deps import get_current_user
 from src.database.connection import get_db_session
+from src.models.user import User
 
+# P4-004: Rate limiting
+from src.middleware.rate_limit import limiter, get_rate_limit
 
-# =============================================================================
-# Logging Configuration
-# =============================================================================
+# P4-004: Error handling
+from src.core.error_handler import (
+    BillingError,
+    ValidationError as BillingValidationError,
+    AuthenticationError,
+    AuthorizationError,
+    NotFoundError,
+    RateLimitError,
+)
+
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# P4-004: Transaction Management
+# =============================================================================
+
+@asynccontextmanager
+async def transaction_scope(db_session: AsyncSession):
+    """
+    Context manager for database transactions with automatic rollback.
+
+    Ensures that transactions are properly committed on success
+    and rolled back on failure.
+
+    Args:
+        db_session: Database session
+
+    Yields:
+        The database session
+
+    Example:
+        >>> async with transaction_scope(session) as session:
+        ...     # Perform database operations
+        ...     session.add(...)
+        ...     # Automatically commits on success, rolls back on error
+    """
+    try:
+        yield db_session
+        await db_session.commit()
+    except Exception:
+        await db_session.rollback()
+        raise
 
 
 # =============================================================================
@@ -214,11 +264,14 @@ router = APIRouter(
         401: {"description": "Unauthorized (missing or invalid token)"},
         403: {"description": "Forbidden (tenant access denied)"},
         400: {"description": "Bad request (invalid parameters)"},
+        429: {"description": "Rate limit exceeded"},
         500: {"description": "Internal server error"},
     }
 )
+@limiter.limit(get_rate_limit("usage"))
 async def get_usage_summary(
     tenant_id: str,
+    request: Request,
     period_start: Optional[datetime] = None,
     period_end: Optional[datetime] = None,
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -253,25 +306,36 @@ async def get_usage_summary(
     """
     try:
         # =============================================================================
-        # 1. Authorization Check
+        # 1. Input Validation - Tenant ID (P4-005)
         # =============================================================================
-        user_tenant_id = current_user.get("tenant_id")
-        user_role = current_user.get("role")
-
-        # Users can only view their own tenant's usage (unless admin)
-        if user_role != "admin" and user_tenant_id != tenant_id:
-            logger.warning(
-                f"Unauthorized access attempt: user {current_user.get('sub')} "
-                f"attempting to access tenant {tenant_id} data"
-            )
+        if not validate_tenant_id(tenant_id):
+            logger.warning(f"Invalid tenant_id format: {tenant_id}")
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You do not have permission to view this tenant's usage data"
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid tenant_id format. Must be 3-64 alphanumeric characters with hyphens/underscores allowed."
             )
 
         # =============================================================================
-        # 2. Input Validation - Date Range
+        # 2. Input Validation - Date Range with ISO 8601 Check (P4-005)
         # =============================================================================
+        # Validate date formats if provided
+        if period_start:
+            period_start_str = period_start.isoformat() if hasattr(period_start, 'isoformat') else str(period_start)
+            if not validate_iso8601_datetime(period_start_str, require_timezone=False):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="period_start must be a valid ISO 8601 datetime"
+                )
+
+        if period_end:
+            period_end_str = period_end.isoformat() if hasattr(period_end, 'isoformat') else str(period_end)
+            if not validate_iso8601_datetime(period_end_str, require_timezone=False):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="period_end must be a valid ISO 8601 datetime"
+                )
+
+        # Validate date range order
         if period_start and period_end:
             if period_start > period_end:
                 raise HTTPException(
@@ -280,7 +344,36 @@ async def get_usage_summary(
                 )
 
         # =============================================================================
-        # 3. Query Subscription to Determine Tier
+        # 3. Authorization Check with Database Verification (P4-005)
+        # =============================================================================
+        user_tenant_id = current_user.get("tenant_id")
+        user_id = current_user.get("sub")
+
+        # Check if user is admin by querying database
+        is_admin = False
+        if user_id:
+            admin_query = select(User).where(User.user_id == user_id)
+            admin_result = await session.execute(admin_query)
+            db_user = admin_result.scalar_one_or_none()
+
+            # Verify admin role from database (not just JWT)
+            if db_user and db_user.role == "admin" and db_user.status == "active":
+                is_admin = True
+                logger.info(f"Admin access verified from database: user {user_id}")
+
+        # Users can only view their own tenant's usage (unless admin verified from DB)
+        if not is_admin and user_tenant_id != tenant_id:
+            logger.warning(
+                f"Unauthorized access attempt: user {user_id} "
+                f"attempting to access tenant {tenant_id} data"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to view this tenant's usage data"
+            )
+
+        # =============================================================================
+        # 4. Query Subscription to Determine Tier
         # =============================================================================
         subscription_query = (
             select(StripeSubscription)
@@ -304,7 +397,7 @@ async def get_usage_summary(
         logger.info(f"Usage summary for tenant {tenant_id} using tier: {tier}")
 
         # =============================================================================
-        # 4. Query Meter Events with Aggregation
+        # 5. Query Meter Events with Aggregation
         # =============================================================================
         # Build base query with filters
         base_filters = [StripeMeterEvent.tenant_id == tenant_id]
@@ -339,7 +432,7 @@ async def get_usage_summary(
         ]
 
         # =============================================================================
-        # 5. Calculate Estimated Costs
+        # 6. Calculate Estimated Costs
         # =============================================================================
         estimated_costs = []
         total_estimated_cost = 0.0
@@ -362,7 +455,7 @@ async def get_usage_summary(
             total_estimated_cost += estimated_cost
 
         # =============================================================================
-        # 6. Query Sync Status
+        # 7. Query Sync Status
         # =============================================================================
         # Count events by status
         status_query = (
@@ -415,7 +508,7 @@ async def get_usage_summary(
         )
 
         # =============================================================================
-        # 7. Build and Return Response
+        # 8. Build and Return Response
         # =============================================================================
         response = UsageSummaryResponse(
             tenant_id=tenant_id,
@@ -464,9 +557,11 @@ async def get_usage_summary(
         200: {"description": "Webhook received successfully"},
         400: {"description": "Bad request (missing signature)"},
         401: {"description": "Unauthorized (invalid signature)"},
+        429: {"description": "Rate limit exceeded"},
         500: {"description": "Internal server error"},
     }
 )
+@limiter.limit(get_rate_limit("webhook"))
 async def stripe_webhook(
     request: Request,
     event_handler: WebhookEventHandler = Depends(get_event_handler)
@@ -963,6 +1058,7 @@ async def create_subscription(
     """
     Create a new subscription for a customer.
 
+    Delegates to StripeService facade for subscription creation.
     Requires authentication and valid Stripe customer ID.
     """
     try:
@@ -975,61 +1071,34 @@ async def create_subscription(
             )
 
         # Create subscription through StripeService
-        # Note: StripeService.create_subscription doesn't exist yet in facade
-        # We'll need to add it or implement here
-        # For now, this is a placeholder that matches the expected API
-
-        # Placeholder implementation - delegates to Stripe API directly
-        import stripe
-        import os
-
-        stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
-
-        # Create subscription in Stripe
-        stripe_sub = stripe.Subscription.create(
-            customer=request.stripe_customer_id,
-            items=[{"price": request.price_id}] if request.price_id else None,
-            cancel_at_period_end=request.cancel_at_period_end,
-            metadata={
-                "tenant_id": tenant_id,
-                "tier": request.tier.value
-            }
-        )
-
-        # Persist to database
-        from src.models.stripe_billing import create_stripe_subscription
-        from datetime import datetime, timezone
-
-        db_subscription = await create_stripe_subscription(
-            session=db_session,
-            tenant_id=tenant_id,
-            stripe_subscription_id=stripe_sub.id,
+        subscription_data = await stripe_service.create_subscription(
             stripe_customer_id=request.stripe_customer_id,
-            status=stripe_sub.status,
-            current_period_start=datetime.fromtimestamp(stripe_sub.current_period_start, tz=timezone.utc),
-            current_period_end=datetime.fromtimestamp(stripe_sub.current_period_end, tz=timezone.utc),
-            cancel_at_period_end=stripe_sub.cancel_at_period_end,
-            tier=request.tier.value
+            tenant_id=tenant_id,
+            tier=request.tier.value,
+            price_id=request.price_id,
+            cancel_at_period_end=request.cancel_at_period_end,
+            db_session=db_session
         )
 
         logger.info(
-            f"Created subscription {stripe_sub.id} for tenant {tenant_id}"
+            f"Created subscription {subscription_data['stripe_subscription_id']} "
+            f"for tenant {tenant_id}"
         )
 
         return SubscriptionResponse(
             tenant_id=tenant_id,
-            stripe_subscription_id=stripe_sub.id,
+            stripe_subscription_id=subscription_data["stripe_subscription_id"],
             stripe_customer_id=request.stripe_customer_id,
-            status=stripe_sub.status,
+            status=subscription_data["status"],
             tier=request.tier.value,
-            current_period_start=datetime.fromtimestamp(stripe_sub.current_period_start, tz=timezone.utc),
-            current_period_end=datetime.fromtimestamp(stripe_sub.current_period_end, tz=timezone.utc),
-            cancel_at_period_end=stripe_sub.cancel_at_period_end,
-            created_at=db_subscription.created_at,
-            updated_at=db_subscription.updated_at
+            current_period_start=subscription_data["current_period_start"],
+            current_period_end=subscription_data["current_period_end"],
+            cancel_at_period_end=subscription_data["cancel_at_period_end"],
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc)
         )
 
-    except stripe.error.StripeError as e:
+    except StripeAPIError as e:
         logger.error(f"Stripe API error creating subscription: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1061,6 +1130,7 @@ async def create_subscription(
 async def get_subscription(
     tenant_id: str,
     current_user: Dict[str, Any] = Depends(get_current_user),
+    stripe_service: StripeService = Depends(get_stripe_service),
     db_session: AsyncSession = Depends(get_db_session)
 ) -> SubscriptionResponse:
     """
@@ -1081,30 +1151,29 @@ async def get_subscription(
                 detail="Access denied: Cannot access other tenants' data"
             )
 
-        # Get subscription from database
-        from sqlmodel import col
-        subscription_result = await db_session.execute(
-            select(StripeSubscription).where(col(StripeSubscription.tenant_id) == tenant_id)
+        # Get subscription from StripeService
+        subscription_data = await stripe_service.get_subscription_by_tenant(
+            tenant_id=tenant_id,
+            db_session=db_session
         )
-        subscription = subscription_result.scalar_one_or_none()
 
-        if not subscription:
+        if not subscription_data:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Subscription not found"
             )
 
         return SubscriptionResponse(
-            tenant_id=subscription.tenant_id,
-            stripe_subscription_id=subscription.stripe_subscription_id,
-            stripe_customer_id=subscription.stripe_customer_id,
-            status=subscription.status,
-            tier=subscription.tier,
-            current_period_start=subscription.current_period_start,
-            current_period_end=subscription.current_period_end,
-            cancel_at_period_end=subscription.cancel_at_period_end,
-            created_at=subscription.created_at,
-            updated_at=subscription.updated_at
+            tenant_id=subscription_data["tenant_id"],
+            stripe_subscription_id=subscription_data["stripe_subscription_id"],
+            stripe_customer_id=subscription_data["stripe_customer_id"],
+            status=subscription_data["status"],
+            tier=subscription_data.get("tier"),
+            current_period_start=subscription_data.get("current_period_start"),
+            current_period_end=subscription_data.get("current_period_end"),
+            cancel_at_period_end=subscription_data.get("cancel_at_period_end", False),
+            created_at=datetime.fromisoformat(subscription_data["created_at"]) if subscription_data.get("created_at") else datetime.now(timezone.utc),
+            updated_at=datetime.fromisoformat(subscription_data["updated_at"]) if subscription_data.get("updated_at") else datetime.now(timezone.utc)
         )
 
     except HTTPException:
@@ -1134,12 +1203,14 @@ async def update_subscription(
     tenant_id: str,
     request: UpdateSubscriptionRequest,
     current_user: Dict[str, Any] = Depends(get_current_user),
+    stripe_service: StripeService = Depends(get_stripe_service),
     db_session: AsyncSession = Depends(get_db_session)
 ) -> SubscriptionResponse:
     """
     Update subscription tier or cancellation preference.
 
     Enforces tenant isolation - users can only update their own tenant's subscription.
+    Delegates to StripeService facade.
     """
     try:
         # Enforce tenant isolation
@@ -1154,7 +1225,7 @@ async def update_subscription(
                 detail="Access denied: Cannot modify other tenants' data"
             )
 
-        # Get existing subscription
+        # Get existing subscription to find stripe_subscription_id
         from sqlmodel import col
         subscription_result = await db_session.execute(
             select(StripeSubscription).where(col(StripeSubscription.tenant_id) == tenant_id)
@@ -1167,37 +1238,19 @@ async def update_subscription(
                 detail="Subscription not found"
             )
 
-        # Update subscription in Stripe
-        import stripe
-        import os
-        from datetime import datetime, timezone
+        # Update subscription through StripeService
+        updated_data = await stripe_service.update_subscription(
+            stripe_subscription_id=subscription.stripe_subscription_id,
+            cancel_at_period_end=request.cancel_at_period_end,
+            tier=request.tier.value if request.tier else None,
+            price_id=request.price_id,
+            db_session=db_session
+        )
 
-        stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+        logger.info(f"Updated subscription {subscription.stripe_subscription_id}")
 
-        update_data = {}
-        if request.cancel_at_period_end is not None:
-            update_data["cancel_at_period_end"] = request.cancel_at_period_end
-
-        # For tier changes, we would need to update the subscription items
-        # This is a simplified implementation
-        if update_data:
-            stripe_sub = stripe.Subscription.modify(
-                subscription.stripe_subscription_id,
-                **update_data
-            )
-
-            # Update database record
-            if request.cancel_at_period_end is not None:
-                subscription.cancel_at_period_end = request.cancel_at_period_end
-
-            if request.tier:
-                subscription.tier = request.tier.value
-
-            subscription.updated_at = datetime.now(timezone.utc)
-            await db_session.commit()
-            await db_session.refresh(subscription)
-
-            logger.info(f"Updated subscription {subscription.stripe_subscription_id}")
+        # Get updated subscription from database
+        await db_session.refresh(subscription)
 
         return SubscriptionResponse(
             tenant_id=subscription.tenant_id,
@@ -1212,6 +1265,11 @@ async def update_subscription(
             updated_at=subscription.updated_at
         )
 
+    except StripeCustomerNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Subscription not found"
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -1239,12 +1297,14 @@ async def cancel_subscription(
     tenant_id: str,
     immediate: bool = Query(False, description="Cancel immediately instead of at period end"),
     current_user: Dict[str, Any] = Depends(get_current_user),
+    stripe_service: StripeService = Depends(get_stripe_service),
     db_session: AsyncSession = Depends(get_db_session)
 ) -> Dict[str, str]:
     """
     Cancel a subscription.
 
     Can cancel immediately or at period end. Enforces tenant isolation.
+    Delegates to StripeService facade.
     """
     try:
         # Enforce tenant isolation
@@ -1272,29 +1332,12 @@ async def cancel_subscription(
                 detail="Subscription not found"
             )
 
-        # Cancel subscription in Stripe
-        import stripe
-        import os
-        from datetime import datetime, timezone
-
-        stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
-
-        if immediate:
-            # Cancel immediately
-            stripe_sub = stripe.Subscription.delete(
-                subscription.stripe_subscription_id
-            )
-            subscription.status = "canceled"
-        else:
-            # Cancel at period end
-            stripe_sub = stripe.Subscription.modify(
-                subscription.stripe_subscription_id,
-                cancel_at_period_end=True
-            )
-            subscription.cancel_at_period_end = True
-
-        subscription.updated_at = datetime.now(timezone.utc)
-        await db_session.commit()
+        # Cancel subscription through StripeService
+        await stripe_service.cancel_subscription(
+            stripe_subscription_id=subscription.stripe_subscription_id,
+            immediate=immediate,
+            db_session=db_session
+        )
 
         logger.info(f"Canceled subscription {subscription.stripe_subscription_id}")
 
