@@ -32,8 +32,9 @@ from typing import Dict, Any
 
 import pytest
 from fastapi import status
-from fastapi.testing import TestClient
+from starlette.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.requests import Request as StarletteRequest
 
 from src.models.stripe_billing import (
     StripeMeterEvent,
@@ -52,6 +53,16 @@ def mock_db_session():
     """Mock database session."""
     session = AsyncMock(spec=AsyncSession)
     return session
+
+
+@pytest.fixture
+def mock_request():
+    """Mock FastAPI/Starlette Request for rate limiting."""
+    request = MagicMock(spec=StarletteRequest)
+    request.client = MagicMock()
+    request.client.host = "127.0.0.1"
+    request.headers = {}
+    return request
 
 
 @pytest.fixture
@@ -191,6 +202,7 @@ class TestUsageSummaryHappyPath:
     async def test_get_usage_summary_success(
         self,
         mock_db_session: AsyncSession,
+        mock_request,
         sample_meter_events,
         sample_subscription
     ):
@@ -224,35 +236,29 @@ class TestUsageSummaryHappyPath:
         mock_sub_result.scalar_one_or_none.return_value = sample_subscription
         mock_db_session.execute.return_value = mock_sub_result
 
-        with patch('src.api.v1.billing.router.get_db_session') as mock_get_db:
-            mock_get_db.return_value = mock_db_session
+        # Mock user query for admin verification (should return non-admin user)
+        from src.models.user import User, UserRole, UserStatus
+        mock_user = MagicMock()
+        mock_user.role = UserRole.ANALYST
+        mock_user.status = UserStatus.ACTIVE
 
-            with patch('src.api.v1.billing.router.get_current_user') as mock_auth:
-                mock_auth.return_value = {
-                    "sub": "user_123",
-                    "tenant_id": "tenant_abc"
-                }
+        # Call the function directly with mock_request
+        from src.api.v1.billing.router import get_usage_summary
 
-                from fastapi import FastAPI
-                app = FastAPI()
-                app.include_router(router)
+        result = await get_usage_summary(
+            tenant_id="tenant_abc",
+            request=mock_request,
+            period_start=None,
+            period_end=None,
+            current_user={"sub": "user_123", "tenant_id": "tenant_abc"},
+            session=mock_db_session
+        )
 
-                # Import the function after patching
-                from src.api.v1.billing.router import get_usage_summary
-
-                # Call the function directly
-                result = await get_usage_summary(
-                    tenant_id="tenant_abc",
-                    period_start=None,
-                    period_end=None,
-                    current_user={"sub": "user_123", "tenant_id": "tenant_abc"}
-                )
-
-                # Verify response structure
-                assert result is not None
-                assert "usage_breakdown" in result
-                assert "estimated_costs" in result
-                assert "sync_status" in result
+        # Verify response structure
+        assert result is not None
+        assert "usage_breakdown" in result.model_dump()
+        assert "estimated_costs" in result.model_dump()
+        assert "sync_status" in result.model_dump()
 
 
 class TestUsageSummaryDateFiltering:

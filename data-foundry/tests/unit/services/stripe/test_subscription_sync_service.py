@@ -74,7 +74,13 @@ def mock_db_session():
     """Provide mock database session."""
     session = AsyncMock()
 
-    # Mock query behavior
+    # Mock execute behavior (for select() statements)
+    mock_result = Mock()
+    mock_result.scalars = Mock(return_value=mock_result)
+    mock_result.first = Mock(return_value=None)
+    session.execute = AsyncMock(return_value=mock_result)
+
+    # Mock query behavior (legacy, kept for compatibility)
     mock_query = Mock()
     session.query = Mock(return_value=mock_query)
     mock_query.filter = Mock(return_value=mock_query)
@@ -82,6 +88,12 @@ def mock_db_session():
 
     # Mock exec behavior for raw SQL
     session.exec = AsyncMock(return_value=mock_query)
+
+    # Mock session methods
+    session.add = Mock()
+    session.commit = AsyncMock()
+    session.refresh = AsyncMock()
+    session.rollback = AsyncMock()
 
     return session
 
@@ -270,7 +282,11 @@ class TestWebhookEventHandling:
             cancel_at_period_end=False,
             tier="gold"
         )
-        mock_db_session.query.return_value.filter.return_value.first.return_value = existing_sub
+
+        # Mock session.execute() for select() statement
+        mock_result = Mock()
+        mock_result.scalars.return_value.first.return_value = existing_sub
+        mock_db_session.execute.return_value = mock_result
 
         event = {
             "id": "evt_delete123",
@@ -312,7 +328,11 @@ class TestWebhookEventHandling:
             cancel_at_period_end=False,
             tier="gold"
         )
-        mock_db_session.query.return_value.filter.return_value.first.return_value = existing_sub
+
+        # Mock session.execute() for select() statement
+        mock_result = Mock()
+        mock_result.scalars.return_value.first.return_value = existing_sub
+        mock_db_session.execute.return_value = mock_result
 
         event = {
             "id": "evt_fail123",
