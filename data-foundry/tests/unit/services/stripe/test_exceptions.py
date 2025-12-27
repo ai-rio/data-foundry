@@ -56,9 +56,9 @@ from src.services.stripe.exceptions import (
 
 SECURITY_TEST_VECTORS = {
     "api_keys": [
-        "sk_test_51AbC1234567890abcdefghijklmnopqrstuvwxyz",
-        "sk_live_51XYZ9876543210zyxwvutsrqponmlkjihgfedcba",
-        "rk_test_abc123def456",
+        "sk_test_REDACTED_TEST_KEY_PLACEHOLDER",
+        "sk_live_REDACTED_LIVE_KEY_PLACEHOLDER",
+        "rk_test_REDACTED_PLACEHOLDER",
     ],
     "passwords": [
         "SuperSecret123!",

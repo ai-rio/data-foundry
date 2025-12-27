@@ -62,13 +62,13 @@ def clean_env():
 @pytest.fixture
 def test_api_key():
     """Test API key fixture - realistic format but not real."""
-    return "sk_test_51M4g1cK3yF4k3K3yT3stD4t4N0tR34lAbc123def456ghi789"
+    return "sk_test_REDACTED_TEST_KEY_PLACEHOLDER_ABC123"
 
 
 @pytest.fixture
 def production_like_api_key():
     """Production-like API key for testing exposure prevention."""
-    return "sk_live_51AbCdEfGhIjKlMnOpQrStUvWxYz1234567890abcdef"
+    return "sk_live_REDACTED_LIVE_KEY_PLACEHOLDER_XYZ789"
 
 
 # ============================================================================

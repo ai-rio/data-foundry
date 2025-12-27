@@ -24,9 +24,9 @@ The security tests are **intentionally failing** to document critical vulnerabil
 - **Vulnerability:** API keys are NOT sanitized in `to_dict()` output
 - **Impact:** Logged exceptions expose Stripe API keys
 - **Test Vectors:**
-  - `sk_test_51AbC1234567890abcdefghijklmnopqrstuvwxyz`
-  - `sk_live_51XYZ9876543210zyxwvutsrqponmlkjihgfedcba`
-  - `rk_test_abc123def456`
+  - `sk_test_[REDACTED]`
+  - `sk_live_[REDACTED]`
+  - `rk_test_[REDACTED]`
 
 **Example:**
 ```python
@@ -288,9 +288,9 @@ Based on test execution and exception behavior:
 
 ### API Keys
 ```python
-"sk_test_51AbC1234567890abcdefghijklmnopqrstuvwxyz"
-"sk_live_51XYZ9876543210zyxwvutsrqponmlkjihgfedcba"
-"rk_test_abc123def456"
+"sk_test_[REDACTED_TEST_KEY]"
+"sk_live_[REDACTED_LIVE_KEY]"
+"rk_test_[REDACTED]"
 ```
 
 ### Passwords
