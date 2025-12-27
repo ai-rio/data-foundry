@@ -8,7 +8,7 @@ for sensitive breach notifications requiring organizational approval.
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, List, Optional, Tuple, Union
 import json
 import uuid
@@ -41,6 +41,9 @@ class ApprovalWorkflowEngine:
 
     Provides multi-level approval management, conditional approval logic,
     delegation capabilities, escalation procedures, and comprehensive audit trails.
+
+    P02-005: Integration with Stripe metered billing for usage tracking.
+    Reports human audit usage after review completion.
     """
 
     def __init__(self):
@@ -53,6 +56,7 @@ class ApprovalWorkflowEngine:
         self.approval_configs = self._load_approval_configs()
         self.audit_trail = []
         self.deadline_monitor = self._initialize_deadline_monitor()
+        self.stripe_billing_enabled = False  # P02-005: Stripe billing integration flag
 
     def _load_approval_rules(self) -> Dict[str, Any]:
         """Load comprehensive approval rules and configurations"""
@@ -449,6 +453,12 @@ class ApprovalWorkflowEngine:
                     "rejection_count": len(workflow["rejections"])
                 }
             )
+
+            # P02-005: Report usage to Stripe when approval is complete
+            if self.stripe_billing_enabled and approval_result["status"] in [
+                ApprovalStatus.APPROVED.value, ApprovalStatus.REJECTED.value
+            ]:
+                await self._report_approval_usage_to_stripe(workflow_id, workflow)
 
             # Send notifications
             if self.notification_service:
@@ -1163,6 +1173,130 @@ This is a high-priority approval request requiring your attention.
 
         for approver_email in alert["approvers"]:
             logger.info(f"Deadline alert sent to {approver_email}")
+
+    # ========================================================================
+    # P02-005: Stripe Billing Integration
+    # ========================================================================
+
+    async def _report_approval_usage_to_stripe(
+        self,
+        workflow_id: str,
+        workflow: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """
+        P02-005: Report human audit usage to Stripe after approval completion.
+
+        FR-030: Post-Processing Hook - Trigger meter event after human review completes
+        FR-031: Batch Aggregation - Aggregate usage within processing batches
+        FR-032: Async Reporting - Report asynchronously to avoid blocking
+        FR-034: Audit Trail - Log all meter event reports
+
+        Args:
+            workflow_id: Workflow identifier
+            workflow: Workflow data dictionary
+
+        Returns:
+            Billing statistics dict or None if reporting disabled/failed
+        """
+        try:
+            from src.services.usage_calculation_service import UsageCalculationService
+            from src.services.stripe_service import StripeService
+            from src.database.connection import get_async_session
+            from src.tasks.ingestion import sanitize_prompt_input
+
+            # Extract tenant_id from workflow request with validation
+            request = workflow.get("request", {})
+            if not request.get("tenant_id"):
+                raise ValueError("tenant_id is required for billing")
+            tenant_id = str(request["tenant_id"]).strip()
+            if not tenant_id or tenant_id == "default":
+                raise ValueError("Invalid tenant_id value")
+
+            # Create usage record for this approval with sanitized metadata
+            approval_record = {
+                "id": workflow_id,
+                "tenant_id": sanitize_prompt_input(tenant_id),
+                "ai_confidence": 0.5,  # Human reviews always treated as low confidence
+                "human_reviewed": True,
+                "workflow_id": workflow_id,
+                "decision": sanitize_prompt_input(str(workflow.get("status", "")))[:50],
+                "reviewers_count": len(workflow.get("approvers", [])),
+                "reviewed_at": datetime.now(timezone.utc).isoformat()
+            }
+
+            usage_service = UsageCalculationService()
+
+            # Calculate usage (should be 1 human_audit)
+            usage = usage_service.calculate_usage_from_records(
+                records=[approval_record],
+                confidence_threshold=0.85
+            )
+
+            if not usage or tenant_id not in usage:
+                logger.warning(f"No usage calculated for workflow {workflow_id}")
+                return None
+
+            # Prepare batch for Stripe with sanitized metadata
+            batch = usage_service.prepare_meter_events_batch(
+                usage_calculation=usage,
+                batch_id=f"approval_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
+                source="approval_workflow",
+                metadata={
+                    "workflow_id": sanitize_prompt_input(workflow_id)[:50],
+                    "decision": sanitize_prompt_input(str(workflow.get("status", "")))[:50],
+                    "approvers_count": len(workflow.get("approvers", []))
+                }
+            )
+
+            # Report to Stripe
+            stripe_service = StripeService()
+            await stripe_service.initialize()
+
+            async with get_async_session() as db_session:
+                # Get Stripe customer ID for tenant
+                customer = await stripe_service.get_customer_by_tenant(tenant_id, db_session)
+
+                if not customer:
+                    logger.warning(f"No Stripe customer found for tenant {tenant_id}")
+                    return None
+
+                # Report the human_audit event
+                for event in batch["events"]:
+                    await stripe_service.report_usage(
+                        meter_event=event["meter_event"],
+                        value=event["value"],
+                        tenant_id=event["tenant_id"],
+                        metadata=event["metadata"],
+                        stripe_customer_id=customer["stripe_customer_id"],
+                        db_session=db_session
+                    )
+
+            logger.info(
+                f"Reported human audit usage for workflow {workflow_id}: "
+                f"{batch['total_human_audits']} human audits for tenant {tenant_id}"
+            )
+
+            return {
+                "workflow_id": workflow_id,
+                "tenant_id": tenant_id,
+                "human_audits_reported": batch["total_human_audits"],
+                "batch_id": batch["batch_id"],
+                "status": "reported"
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to report approval usage to Stripe: {str(e)}")
+            return None
+
+    def enable_stripe_billing(self) -> None:
+        """Enable Stripe billing integration for approval workflows."""
+        self.stripe_billing_enabled = True
+        logger.info("Stripe billing integration enabled for approval workflows")
+
+    def disable_stripe_billing(self) -> None:
+        """Disable Stripe billing integration for approval workflows."""
+        self.stripe_billing_enabled = False
+        logger.info("Stripe billing integration disabled for approval workflows")
 
     def get_compliance_validation_status(self, workflow_id: str) -> Dict[str, Any]:
         """Get compliance validation status for workflow"""

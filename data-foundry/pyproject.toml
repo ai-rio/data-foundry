@@ -51,7 +51,7 @@ dependencies = [
     "spacy-legacy>=3.0.12",
     "spacy-loggers>=1.0.5",
     # Business & Billing
-    "stripe>=7.5.0",
+    "stripe>=10.0.0",  # Stripe Python SDK v10+ with v2 billing API support
     # HTTP & Async
     "httpx>=0.25.0",
     "aiofiles>=23.2.0",

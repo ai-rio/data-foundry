@@ -1058,9 +1058,12 @@ async def data_ingestion_flow(
     enable_ai_labeling: bool = True,
     enable_pii_redaction: bool = True,
     enable_human_review: bool = True,
+    enable_stripe_billing: bool = False,
 ):
     """
     Main ingestion flow that orchestrates the entire data processing pipeline.
+
+    P02-005: Integration with Stripe metered billing for usage tracking.
 
     Args:
         data_source: Source of data to process
@@ -1068,6 +1071,7 @@ async def data_ingestion_flow(
         enable_ai_labeling: Whether to apply AI labeling
         enable_pii_redaction: Whether to apply PII redaction
         enable_human_review: Whether to route low confidence for human review
+        enable_stripe_billing: Whether to report usage to Stripe for metered billing
     """
     logger = get_run_logger()
     logger.info("Starting Data Foundry Ingestion Flow")
@@ -1180,16 +1184,128 @@ async def data_ingestion_flow(
         if human_review:
             save_to_database(human_review, "human_review_queue")
 
+        # P02-005: Step 9 - Report usage to Stripe for metered billing
+        stripe_billing_stats = {}
+        if enable_stripe_billing and enable_ai_labeling and labeled_data:
+            stripe_billing_stats = await report_usage_to_stripe(
+                labeled_data=labeled_data,
+                source="ingestion_pipeline"
+            )
+
         logger.info("Data Ingestion Flow completed successfully")
         return {
             **stats,
             "success": True,
             "total_records": stats["total_extracted"],  # Alias for backward compatibility
+            "stripe_billing": stripe_billing_stats,
         }
 
     except Exception as e:
         logger.error(f"Data Ingestion Flow failed: {str(e)}")
         raise
+
+
+@task
+async def report_usage_to_stripe(
+    labeled_data: list[dict[str, Any]],
+    source: str = "pipeline"
+) -> dict[str, Any]:
+    """
+    P02-005: Report usage to Stripe for metered billing.
+
+    FR-030: Post-Processing Hook - Trigger meter event after data processing completes
+    FR-031: Batch Aggregation - Aggregate usage within processing batches before reporting
+    FR-032: Async Reporting - Report usage asynchronously to avoid blocking processing pipeline
+    FR-034: Audit Trail - Log all meter event reports for audit purposes
+
+    This task:
+    1. Calculates usage from AI labeling results (confidence threshold-based)
+    2. Aggregates usage by tenant
+    3. Reports to Stripe asynchronously (non-blocking)
+    4. Includes audit trail metadata
+
+    Args:
+        labeled_data: List of records with AI labeling results (ai_confidence, tenant_id)
+        source: Source of the usage (e.g., "ingestion_pipeline", "approval_workflow")
+
+    Returns:
+        Dictionary with billing statistics:
+        {
+            "tenants_reported": 2,
+            "total_ai_labels": 15,
+            "total_human_audits": 5,
+            "batch_id": "batch_20250125_1234_abc123"
+        }
+    """
+    logger = get_run_logger()
+    logger.info(f"Reporting usage to Stripe for {len(labeled_data)} labeled records")
+
+    try:
+        from src.services.usage_calculation_service import UsageCalculationService
+        from src.services.stripe_service import StripeService
+        from sqlalchemy.ext.asyncio import AsyncSession
+        from src.database.connection import get_async_session
+
+        usage_service = UsageCalculationService()
+
+        # Calculate usage from labeled records
+        usage = usage_service.calculate_usage_from_records(
+            records=labeled_data,
+            confidence_threshold=0.85  # AI_LABELS >= 0.85, HUMAN_AUDITS < 0.85
+        )
+
+        if not usage:
+            logger.info("No usage to report (empty tenant aggregation)")
+            return {
+                "tenants_reported": 0,
+                "total_ai_labels": 0,
+                "total_human_audits": 0,
+                "status": "skipped"
+            }
+
+        # Prepare batch for Stripe reporting
+        batch = usage_service.prepare_meter_events_batch(
+            usage_calculation=usage,
+            batch_id=f"ingest_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+            source=source
+        )
+
+        # Initialize Stripe service and report asynchronously
+        stripe_service = StripeService()
+        await stripe_service.initialize()
+
+        # Use batch reporting for efficiency
+        async with get_async_session() as db_session:
+            batch_result = await stripe_service.report_usage_batch(
+                events=batch["events"],
+                tenant_id="multi_tenant",  # Events have individual tenant_id
+                db_session=db_session
+            )
+
+        logger.info(
+            f"Stripe billing report complete: "
+            f"{batch_result.successful_count}/{batch_result.total_events} events succeeded"
+        )
+
+        return {
+            "tenants_reported": batch["tenant_count"],
+            "total_ai_labels": batch["total_ai_labels"],
+            "total_human_audits": batch["total_human_audits"],
+            "batch_id": batch["batch_id"],
+            "successful_events": batch_result.successful_count,
+            "failed_events": batch_result.failed_count,
+            "status": "reported"
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to report usage to Stripe: {str(e)}")
+        return {
+            "tenants_reported": 0,
+            "total_ai_labels": 0,
+            "total_human_audits": 0,
+            "status": "error",
+            "error": str(e)
+        }
 
 
 if __name__ == "__main__":

@@ -1,1 +1,25 @@
 stripe-billing-wt/
+tests/integration/__pycache__/
+tests/__pycache__/
+tests/**/__pycache__/
+*.pyc
+*.pyo
+
+# Coverage reports
+.coverage
+coverage.json
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local

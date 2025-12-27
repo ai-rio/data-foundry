@@ -5,6 +5,7 @@ Pytest configuration and fixtures for Data Foundry tests
 import asyncio
 import json
 import os
+import sys
 import pytest
 import tempfile
 import time
@@ -13,6 +14,64 @@ from datetime import datetime
 from decimal import Decimal
 from typing import AsyncGenerator, Generator
 from unittest.mock import Mock, AsyncMock, patch
+
+# CRITICAL: Set test environment variables BEFORE importing src modules
+# This ensures database settings are correct for integration tests
+os.environ.setdefault('DATABASE_URL', 'postgresql://foundry_user:foundry_password@localhost:5433/data_foundry')
+
+# CRITICAL: Mock problematic modules BEFORE importing src.main
+# This prevents import errors when modules are not available
+sys.modules['structlog'] = Mock()
+
+# Only mock jose if it's not installed (like asyncpg and redis)
+try:
+    import jose
+    import jose.exceptions
+    import jose.jwt
+    # jose is installed, don't mock it
+except ImportError:
+    sys.modules['jose'] = Mock()
+    sys.modules['jose.jwt'] = Mock()
+
+# Only mock asyncpg and redis if they are not actually installed
+# This allows integration tests to use real database connections
+try:
+    import asyncpg
+    # asyncpg is installed, don't mock it
+except ImportError:
+    sys.modules['asyncpg'] = Mock()  # PostgreSQL async driver
+
+try:
+    import redis
+    # redis is installed, don't mock it
+except ImportError:
+    sys.modules['redis'] = Mock()  # Redis client
+
+# Mock presidio modules (optional PII redaction)
+mock_presidio_analyzer = Mock()
+mock_presidio_analyzer.AnalyzerEngine = Mock
+mock_presidio_analyzer.PatternRecognizer = Mock
+sys.modules['presidio_analyzer'] = mock_presidio_analyzer
+
+mock_presidio_anonymizer = Mock()
+mock_presidio_anonymizer.AnonymizerEngine = Mock
+sys.modules['presidio_anonymizer'] = mock_presidio_anonymizer
+
+# Mock dlt module structure
+mock_dlt = Mock()
+mock_dlt.pipeline = Mock()
+mock_dlt.destinations = Mock()
+mock_dlt.destinations.postgres = Mock()
+sys.modules['dlt'] = mock_dlt
+sys.modules['dlt.pipeline'] = mock_dlt.pipeline
+sys.modules['dlt.destinations'] = mock_dlt.destinations
+
+# Mock prefect module structure
+mock_prefect = Mock()
+mock_prefect.flow = Mock()
+mock_prefect.get_run_logger = Mock()
+mock_prefect.task = Mock()
+sys.modules['prefect'] = mock_prefect
 
 import pytest_asyncio
 from fastapi.testclient import TestClient
@@ -34,12 +93,15 @@ from src.services.cost_service import CostService
 # AuditService not available in audit module - using AuditLogger instead
 
 
-@pytest.fixture(scope="session")
-def event_loop():
-    """Create an instance of the default event loop for the test session."""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
+# Note: The event_loop fixture is no longer needed with pytest-asyncio >= 0.17
+# It's handled automatically by pytest-asyncio based on asyncio_mode setting
+# Uncomment and customize only if you need specific event loop behavior
+# @pytest.fixture(scope="session")
+# def event_loop():
+#     """Create an instance of the default event loop for the test session."""
+#     loop = asyncio.get_event_loop_policy().new_event_loop()
+#     yield loop
+#     loop.close()
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -58,8 +120,8 @@ def test_settings() -> Settings:
 
     # Create a new settings instance with test values
     test_settings = Settings(
-        # Database
-        DATABASE_URL="postgresql://foundry_user:foundry_password@localhost:5432/data_foundry",
+        # Database - use port 5433 where the test database container runs
+        DATABASE_URL="postgresql://foundry_user:foundry_password@localhost:5433/data_foundry",
         DATABASE_POOL_SIZE=5,
         DATABASE_MAX_OVERFLOW=10,
 
@@ -110,11 +172,19 @@ def test_settings() -> Settings:
     return test_settings
 
 
-@pytest_asyncio.fixture(scope="session")
+@pytest_asyncio.fixture
 async def db_setup() -> AsyncGenerator[None, None]:
-    """Set up test database."""
-    # Initialize database connection
-    await db_connection.initialize()
+    """Set up test database.
+
+    Note: This fixture is function-scoped to work with pytest-asyncio 1.3.0's
+    function-scoped event loops. For performance, we only create tables once.
+    """
+    # Initialize database connection (idempotent)
+    try:
+        await db_connection.initialize()
+    except Exception:
+        # Already initialized, just need to make sure pool is ready
+        pass
 
     # Create tables and RLS policies
     from src.database.migrations import create_tables, create_indexes, create_rls_policies
@@ -124,8 +194,8 @@ async def db_setup() -> AsyncGenerator[None, None]:
 
     yield
 
-    # Clean up
-    await db_connection.close()
+    # Note: We don't close the connection here to allow other tests to use it
+    # The connection will be closed when the test session ends
 
 
 @pytest_asyncio.fixture
@@ -784,5 +854,5 @@ def ai_request_data():
     }
 
 
-# Test markers
-pytestmark = pytest.mark.asyncio
+# Note: pytestmark = pytest.mark.asyncio is removed because pytest.ini has asyncio_mode = auto
+# This avoids conflicts with pytest-asyncio 1.3.0's automatic test detection

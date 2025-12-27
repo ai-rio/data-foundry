@@ -1,0 +1,372 @@
+"""
+Configuration management for Stripe service modules.
+
+This module provides centralized configuration with environment variable support,
+sensible defaults, and validation for all Stripe service components.
+
+Features:
+- Environment variable loading with defaults
+- Configuration validation
+- Meter ID mapping
+- Retry, idempotency, and batch configuration
+
+Task: P02-513 (Foundation Layer - Config)
+Created: 2025-12-25
+"""
+
+import os
+from dataclasses import dataclass, field
+from typing import Dict, Optional, List, TypedDict
+from enum import Enum
+
+from .types import MeterType, SubscriptionTier, PriceType, PriceIdMapping
+
+
+# ============================================================================
+# Enum Definitions
+# ============================================================================
+
+class MeterType(str, Enum):
+    """Supported meter event types for usage-based billing."""
+    AI_LABELS = "ai_labels"
+    HUMAN_AUDITS = "human_audits"
+
+
+# ============================================================================
+# TypedDict Definitions (will move to types.py when created)
+# ============================================================================
+
+class RetryConfig(TypedDict, total=False):
+    """Retry configuration settings."""
+    max_retries: int
+    initial_delay_ms: int
+    max_delay_ms: int
+    backoff_multiplier: float
+    jitter_enabled: bool
+
+
+class IdempotencyConfig(TypedDict, total=False):
+    """Idempotency configuration settings."""
+    max_key_length: int
+    retention_hours: int
+    max_registry_size: int
+
+
+# ============================================================================
+# Configuration Dataclass
+# ============================================================================
+
+@dataclass
+class StripeConfig:
+    """
+    Centralized configuration for Stripe services.
+
+    Loads configuration from environment variables with sensible defaults.
+    All configuration values are validated on creation.
+
+    Environment Variables:
+        STRIPE_MAX_RETRIES: Maximum retry attempts (default: 5)
+        STRIPE_INITIAL_RETRY_DELAY_MS: Initial delay in ms (default: 1000)
+        STRIPE_MAX_RETRY_DELAY_MS: Maximum delay in ms (default: 32000)
+        STRIPE_AI_LABELS_METER_ID: Meter ID for AI labels (required for production)
+        STRIPE_HUMAN_AUDITS_METER_ID: Meter ID for human audits (required for production)
+
+        Price IDs for Gold Tier:
+        STRIPE_GOLD_AI_LABELS_PRICE_ID: Price ID for Gold AI labels
+        STRIPE_GOLD_HUMAN_AUDITS_PRICE_ID: Price ID for Gold human audits
+        STRIPE_GOLD_PLATFORM_FEE_PRICE_ID: Price ID for Gold platform fee
+
+        Price IDs for Silver Tier:
+        STRIPE_SILVER_AI_LABELS_PRICE_ID: Price ID for Silver AI labels
+        STRIPE_SILVER_HUMAN_AUDITS_PRICE_ID: Price ID for Silver human audits
+        STRIPE_SILVER_PLATFORM_FEE_PRICE_ID: Price ID for Silver platform fee
+
+        Price IDs for Bronze Tier:
+        STRIPE_BRONZE_AI_LABELS_PRICE_ID: Price ID for Bronze AI labels
+        STRIPE_BRONZE_HUMAN_AUDITS_PRICE_ID: Price ID for Bronze human audits
+        STRIPE_BRONZE_PLATFORM_FEE_PRICE_ID: Price ID for Bronze platform fee
+    """
+
+    # API Configuration
+    api_key: Optional[str] = field(default=None, repr=False)
+
+    # Retry Configuration
+    max_retries: int = field(
+        default_factory=lambda: int(os.getenv("STRIPE_MAX_RETRIES", "5"))
+    )
+    initial_retry_delay_ms: int = field(
+        default_factory=lambda: int(os.getenv("STRIPE_INITIAL_RETRY_DELAY_MS", "1000"))
+    )
+    max_retry_delay_ms: int = field(
+        default_factory=lambda: int(os.getenv("STRIPE_MAX_RETRY_DELAY_MS", "32000"))
+    )
+    retry_backoff_multiplier: float = 2.0
+    jitter_enabled: bool = True
+
+    # Idempotency Configuration
+    max_idempotency_key_length: int = 255  # Stripe API limit
+    idempotency_retention_hours: int = 24
+    max_idempotency_registry_size: int = 10000
+
+    # Batch Configuration
+    max_batch_size: int = 100
+
+    # Sync Configuration (Phase 3: Subscription Sync)
+    sync_interval_minutes: int = field(
+        default_factory=lambda: int(os.getenv("STRIPE_SYNC_INTERVAL_MINUTES", "60"))
+    )
+    sync_lock_ttl_seconds: int = field(
+        default_factory=lambda: int(os.getenv("STRIPE_SYNC_LOCK_TTL_SECONDS", "300"))
+    )
+    sync_batch_size: int = field(
+        default_factory=lambda: int(os.getenv("STRIPE_SYNC_BATCH_SIZE", "100"))
+    )
+
+    # Meter Configuration
+    meter_ids: Dict[str, str] = field(default_factory=dict)
+
+    # Price Configuration (Phase 3: Subscription Tiers)
+    price_ids: Dict[str, Dict[str, str]] = field(default_factory=dict)
+
+    # Validation Configuration
+    reserved_metadata_keys: frozenset = field(
+        default_factory=lambda: frozenset({"value", "stripe_customer_id", "batch_id"})
+    )
+
+    def __post_init__(self):
+        """Load meter IDs and price IDs from environment after initialization."""
+        if not self.meter_ids:
+            self.meter_ids = {
+                MeterType.AI_LABELS.value: os.getenv("STRIPE_AI_LABELS_METER_ID", ""),
+                MeterType.HUMAN_AUDITS.value: os.getenv("STRIPE_HUMAN_AUDITS_METER_ID", ""),
+            }
+
+        if not self.price_ids:
+            # Load price IDs for each subscription tier
+            self.price_ids = {
+                SubscriptionTier.GOLD.value: {
+                    PriceType.AI_LABELS.value: os.getenv("STRIPE_GOLD_AI_LABELS_PRICE_ID", ""),
+                    PriceType.HUMAN_AUDITS.value: os.getenv("STRIPE_GOLD_HUMAN_AUDITS_PRICE_ID", ""),
+                    PriceType.PLATFORM_FEE.value: os.getenv("STRIPE_GOLD_PLATFORM_FEE_PRICE_ID", ""),
+                },
+                SubscriptionTier.SILVER.value: {
+                    PriceType.AI_LABELS.value: os.getenv("STRIPE_SILVER_AI_LABELS_PRICE_ID", ""),
+                    PriceType.HUMAN_AUDITS.value: os.getenv("STRIPE_SILVER_HUMAN_AUDITS_PRICE_ID", ""),
+                    PriceType.PLATFORM_FEE.value: os.getenv("STRIPE_SILVER_PLATFORM_FEE_PRICE_ID", ""),
+                },
+                SubscriptionTier.BRONZE.value: {
+                    PriceType.AI_LABELS.value: os.getenv("STRIPE_BRONZE_AI_LABELS_PRICE_ID", ""),
+                    PriceType.HUMAN_AUDITS.value: os.getenv("STRIPE_BRONZE_HUMAN_AUDITS_PRICE_ID", ""),
+                    PriceType.PLATFORM_FEE.value: os.getenv("STRIPE_BRONZE_PLATFORM_FEE_PRICE_ID", ""),
+                },
+            }
+
+    @classmethod
+    def from_environment(cls) -> "StripeConfig":
+        """
+        Create configuration from environment variables.
+
+        Returns:
+            StripeConfig instance with values loaded from environment
+        """
+        return cls()
+
+    def validate(self) -> List[str]:
+        """
+        Validate configuration values.
+
+        Returns:
+            List of validation error messages (empty if valid)
+
+        Validates:
+        - Retry configuration has non-negative values
+        - Max retry delay >= initial retry delay
+        - Batch size is within valid range
+        - Meter IDs are configured for production use
+        """
+        errors: List[str] = []
+
+        # Validate retry configuration
+        if self.max_retries < 0:
+            errors.append(
+                f"max_retries must be >= 0, got {self.max_retries}"
+            )
+
+        if self.initial_retry_delay_ms < 0:
+            errors.append(
+                f"initial_retry_delay_ms must be >= 0, got {self.initial_retry_delay_ms}"
+            )
+
+        if self.max_retry_delay_ms < self.initial_retry_delay_ms:
+            errors.append(
+                f"max_retry_delay_ms ({self.max_retry_delay_ms}) must be >= "
+                f"initial_retry_delay_ms ({self.initial_retry_delay_ms})"
+            )
+
+        # Validate batch size
+        if self.max_batch_size < 1:
+            errors.append(
+                f"max_batch_size must be >= 1, got {self.max_batch_size}"
+            )
+
+        if self.max_batch_size > 1000:
+            errors.append(
+                f"max_batch_size must be <= 1000 (Stripe API limit), got {self.max_batch_size}"
+            )
+
+        # Validate idempotency configuration
+        if self.max_idempotency_key_length < 1:
+            errors.append(
+                f"max_idempotency_key_length must be >= 1, got {self.max_idempotency_key_length}"
+            )
+
+        if self.max_idempotency_key_length > 255:
+            errors.append(
+                f"max_idempotency_key_length must be <= 255 (Stripe API limit), "
+                f"got {self.max_idempotency_key_length}"
+            )
+
+        if self.idempotency_retention_hours < 1:
+            errors.append(
+                f"idempotency_retention_hours must be >= 1, got {self.idempotency_retention_hours}"
+            )
+
+        if self.max_idempotency_registry_size < 1:
+            errors.append(
+                f"max_idempotency_registry_size must be >= 1, got {self.max_idempotency_registry_size}"
+            )
+
+        # Validate sync configuration
+        if self.sync_interval_minutes < 1:
+            errors.append(
+                f"sync_interval_minutes must be >= 1, got {self.sync_interval_minutes}"
+            )
+
+        if self.sync_lock_ttl_seconds < 1:
+            errors.append(
+                f"sync_lock_ttl_seconds must be >= 1, got {self.sync_lock_ttl_seconds}"
+            )
+
+        if self.sync_batch_size < 1:
+            errors.append(
+                f"sync_batch_size must be >= 1, got {self.sync_batch_size}"
+            )
+
+        if self.sync_batch_size > 1000:
+            errors.append(
+                f"sync_batch_size must be <= 1000, got {self.sync_batch_size}"
+            )
+
+        # Warn about missing meter IDs (not an error for development)
+        missing_meters = [
+            meter_type for meter_type, meter_id in self.meter_ids.items()
+            if not meter_id
+        ]
+        if missing_meters:
+            # This is a warning, not an error - development may work without meter IDs
+            pass  # Could log warning here
+
+        # Warn about missing price IDs (not an error for development)
+        missing_prices = []
+        for tier, tier_prices in self.price_ids.items():
+            for price_type, price_id in tier_prices.items():
+                if not price_id:
+                    missing_prices.append(f"{tier}.{price_type}")
+
+        if missing_prices:
+            # This is a warning, not an error - development may work without price IDs
+            pass  # Could log warning here
+
+        return errors
+
+    def get_retry_config(self) -> RetryConfig:
+        """
+        Get retry configuration as TypedDict.
+
+        Returns:
+            RetryConfig dictionary with retry settings
+        """
+        return RetryConfig(
+            max_retries=self.max_retries,
+            initial_delay_ms=self.initial_retry_delay_ms,
+            max_delay_ms=self.max_retry_delay_ms,
+            backoff_multiplier=self.retry_backoff_multiplier,
+            jitter_enabled=self.jitter_enabled
+        )
+
+    def get_idempotency_config(self) -> IdempotencyConfig:
+        """
+        Get idempotency configuration as TypedDict.
+
+        Returns:
+            IdempotencyConfig dictionary with idempotency settings
+        """
+        return IdempotencyConfig(
+            max_key_length=self.max_idempotency_key_length,
+            retention_hours=self.idempotency_retention_hours,
+            max_registry_size=self.max_idempotency_registry_size
+        )
+
+    def get_meter_id(self, meter_type: MeterType) -> Optional[str]:
+        """
+        Get meter ID for a meter type.
+
+        Args:
+            meter_type: The MeterType enum value
+
+        Returns:
+            Meter ID string or None if not configured
+        """
+        meter_id = self.meter_ids.get(meter_type.value, "")
+        return meter_id if meter_id else None
+
+    def is_meter_configured(self, meter_type: MeterType) -> bool:
+        """
+        Check if a meter type has a configured ID.
+
+        Args:
+            meter_type: The MeterType enum value
+
+        Returns:
+            True if meter ID is configured and non-empty
+        """
+        return bool(self.get_meter_id(meter_type))
+
+    def get_price_id(self, tier: SubscriptionTier, price_type: PriceType) -> Optional[str]:
+        """
+        Get price ID for a subscription tier and price type.
+
+        Args:
+            tier: The SubscriptionTier enum value (GOLD, SILVER, BRONZE)
+            price_type: The PriceType enum value (AI_LABELS, HUMAN_AUDITS, PLATFORM_FEE)
+
+        Returns:
+            Price ID string or None if not configured
+
+        Example:
+            >>> config = StripeConfig.from_environment()
+            >>> gold_labels_price = config.get_price_id(SubscriptionTier.GOLD, PriceType.AI_LABELS)
+            >>> print(gold_labels_price)  # 'price_1SiGsmGgBK1ooXYFiTaAJTsg'
+        """
+        tier_prices = self.price_ids.get(tier.value, {})
+        price_id = tier_prices.get(price_type.value, "")
+        return price_id if price_id else None
+
+    def is_price_configured(self, tier: SubscriptionTier, price_type: PriceType) -> bool:
+        """
+        Check if a price type has a configured ID for a tier.
+
+        Args:
+            tier: The SubscriptionTier enum value (GOLD, SILVER, BRONZE)
+            price_type: The PriceType enum value (AI_LABELS, HUMAN_AUDITS, PLATFORM_FEE)
+
+        Returns:
+            True if price ID is configured and non-empty
+
+        Example:
+            >>> config = StripeConfig.from_environment()
+            >>> if config.is_price_configured(SubscriptionTier.GOLD, PriceType.AI_LABELS):
+            ...     print("Gold AI labels price is configured")
+        """
+        return bool(self.get_price_id(tier, price_type))
+

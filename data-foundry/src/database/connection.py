@@ -124,6 +124,27 @@ class DatabaseConnection:
         """Initialize database connections and create tables."""
         logger.info("Initializing database connections and creating tables")
 
+        # Dispose existing async engine if it exists (for pytest-asyncio compatibility)
+        if self._async_engine:
+            try:
+                await self._async_engine.dispose()
+                logger.debug("Disposed existing async engine")
+            except Exception:
+                pass
+
+        # Create a new async engine (ensures it binds to current event loop)
+        from sqlalchemy.ext.asyncio import create_async_engine
+        self._async_engine = create_async_engine(
+            settings.database_url_async,
+            echo=settings.DEBUG,
+            pool_size=settings.DATABASE_POOL_SIZE,
+            max_overflow=settings.DATABASE_MAX_OVERFLOW,
+            pool_pre_ping=True,      # Validate connections before use
+            pool_recycle=3600,       # Recycle after 1 hour
+            pool_timeout=30,         # Wait timeout in seconds
+        )
+        logger.debug("New async engine created for current event loop")
+
         # Create async connection pool
         self._pool = await asyncpg.create_pool(
             settings.DATABASE_URL,

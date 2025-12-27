@@ -1,7 +1,9 @@
-"""Billing API package initialization."""
+"""
+Billing API Module (v1)
 
-from fastapi import APIRouter
+Provides Stripe billing and webhook endpoints.
+"""
 
-from .router import router as billing_router
+from .router import router
 
-__all__ = ["billing_router"]
+__all__ = ['router']

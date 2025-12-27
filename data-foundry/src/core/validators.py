@@ -1,9 +1,104 @@
 """
 Input validation module for Data Foundry
+
+P4-005 Updates:
+- Added validate_tenant_id with regex pattern validation
+- Added validate_iso8601_datetime with timezone validation
 """
 
 import re
 from typing import Any, Dict, List, Optional
+from datetime import datetime
+from dateutil import parser as date_parser
+
+
+# Tenant ID validation pattern (P4-005)
+# Format: Alphanumeric with hyphens/underscores, 3-64 chars
+TENANT_ID_PATTERN = r'^[a-zA-Z0-9_-]{3,64}$'
+
+
+def validate_tenant_id(tenant_id: str) -> bool:
+    """
+    Validate tenant ID format with regex pattern (P4-005).
+
+    Tenant IDs must:
+    - Be 3-64 characters long
+    - Contain only alphanumeric characters, hyphens, or underscores
+    - Not start or end with a hyphen or underscore
+    - Not contain consecutive hyphens or underscores
+
+    Args:
+        tenant_id: Tenant ID to validate
+
+    Returns:
+        True if tenant ID is valid, False otherwise
+
+    Examples:
+        >>> validate_tenant_id("tenant_abc123")
+        True
+        >>> validate_tenant_id("abc")
+        True
+        >>> validate_tenant_id("a")  # Too short
+        False
+        >>> validate_tenant_id("abc@example.com")  # Invalid chars
+        False
+    """
+    if not tenant_id or not isinstance(tenant_id, str):
+        return False
+
+    # Check basic pattern
+    if not re.match(TENANT_ID_PATTERN, tenant_id):
+        return False
+
+    # Additional checks
+    # Cannot start or end with hyphen/underscore
+    if tenant_id[0] in ['-', '_'] or tenant_id[-1] in ['-', '_']:
+        return False
+
+    # No consecutive hyphens or underscores
+    if '--' in tenant_id or '__' in tenant_id or '-_' in tenant_id or '_-' in tenant_id:
+        return False
+
+    return True
+
+
+def validate_iso8601_datetime(date_string: str, require_timezone: bool = True) -> bool:
+    """
+    Validate ISO 8601 datetime format with optional timezone requirement (P4-005).
+
+    Args:
+        date_string: Datetime string to validate
+        require_timezone: If True, requires timezone offset or Z suffix
+
+    Returns:
+        True if datetime is valid ISO 8601 format, False otherwise
+
+    Examples:
+        >>> validate_iso8601_datetime("2025-01-15T10:30:00Z")
+        True
+        >>> validate_iso8601_datetime("2025-01-15T10:30:00+00:00")
+        True
+        >>> validate_iso8601_datetime("2025-01-15T10:30:00")
+        False  # No timezone when required
+        >>> validate_iso8601_datetime("2025-01-15T10:30:00", require_timezone=False)
+        True
+        >>> validate_iso8601_datetime("invalid-date")
+        False
+    """
+    if not date_string or not isinstance(date_string, str):
+        return False
+
+    try:
+        # Try to parse the date string
+        dt = date_parser.isoparse(date_string)
+
+        # Check if timezone is present when required
+        if require_timezone and dt.tzinfo is None:
+            return False
+
+        return True
+    except (ValueError, AttributeError):
+        return False
 
 
 def validate_input(input_str: str) -> bool:
