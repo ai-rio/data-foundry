@@ -27,3 +27,8 @@ Thumbs.db
 # Claude Code / Serena
 .serena/
 .claude-code/
+
+# Test Data (downloaded by download_pilot_datasets.py)
+data/pilot_test_datasets/
+pilot_test_results/
+api_test_results/

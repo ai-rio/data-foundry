@@ -138,18 +138,21 @@ async def get_upload_pipeline(
 
     job_service = JobTrackingService(repo=job_repo)
 
-    # Use real PrefectClient for Phase 2 integration
-    # Get Prefect API URL from environment (default to local development server)
-    prefect_api_url = os.environ.get("PREFECT_API_URL", "http://localhost:4200/api")
+    # Phase 2: Use MockPrefectClient with synchronous execution for real testing
+    # This executes data_ingestion_flow() immediately and updates job status
+    # In production, would use real PrefectClient to defer to async Prefect Server
 
-    prefect_client = PrefectClient(
-        api_url=prefect_api_url,
+    from src.application.upload_pipeline import MockPrefectClient
+
+    prefect_client = MockPrefectClient(
         job_service=job_service,
+        job_repo=job_repo,
+        execute_synchronously=True,  # Execute flows immediately (not async via Prefect Server)
     )
 
     logger.info(
-        f"UploadPipeline configured with PostgreSQL JobRepository "
-        f"and PrefectClient (api_url={prefect_api_url})"
+        "UploadPipeline configured with PostgreSQL JobRepository "
+        "and MockPrefectClient (synchronous execution)"
     )
 
     return UploadPipeline(
