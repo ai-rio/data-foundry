@@ -15,6 +15,8 @@ from src.app.middleware import (
 )
 
 from src.api.v1.consent.router import router as consent_router
+from src.api.v1.upload.router import router as upload_router  # Phase 1 - File Upload API
+from src.api.v1.jobs.router import router as jobs_router  # Phase 1 - Job Tracking API
 from src.api.v1.quality.router import router as quality_router  # CRITICAL #2 - Rate limiting (custom in-memory)
 from src.api.v1.abtest.router import router as abtest_router  # Week 4 Phase 2.2 - A/B Testing API
 from src.api.v1.signals.router import router as signals_router  # Week 4 Phase 2.3 - Signal Detection API
@@ -65,6 +67,8 @@ app.add_middleware(RequestLoggingMiddleware)
 
 # Include API routers
 app.include_router(consent_router, prefix="/api/v1")
+app.include_router(upload_router, prefix="/api/v1")  # Phase 1 - File Upload API
+app.include_router(jobs_router, prefix="/api/v1")  # Phase 1 - Job Tracking API
 app.include_router(quality_router, prefix="/api/v1")
 app.include_router(abtest_router, prefix="/api/v1")  # Week 4 Phase 2.2 - A/B Testing API
 app.include_router(signals_router, prefix="/api/v1")  # Week 4 Phase 2.3 - Signal Detection API
