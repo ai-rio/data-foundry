@@ -18,15 +18,11 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy pyproject.toml for better Docker layer caching
-COPY pyproject.toml ./
-COPY requirements-updated.txt ./
+# Copy requirements for better Docker layer caching
+COPY requirements.txt ./
 
-# Install uv for fast dependency resolution
-RUN pip install uv
-
-# Install Python dependencies using uv (much faster)
-RUN uv pip install --system -r requirements-updated.txt
+# Install dependencies
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Download spaCy model (needed for PII detection)
 RUN python -m spacy download en_core_web_sm
