@@ -200,3 +200,90 @@ class IJobRepository(ABC):
             InvalidStateTransition: If transition is not allowed
         """
         pass
+
+    # -----------------------------------------------------------------
+    # Worker-specific methods (Phase 2 Background Worker Support)
+    # -----------------------------------------------------------------
+
+    @abstractmethod
+    async def claim_job(
+        self,
+        job_id: str,
+        expected_version: int,
+    ) -> ProcessingJob:
+        """
+        Claim a job for processing with optimistic locking.
+
+        Atomically transitions a PENDING job to PROCESSING state
+        only if the current version matches expected_version.
+        This prevents multiple workers from claiming the same job.
+
+        Args:
+            job_id: Job identifier to claim
+            expected_version: Expected current version (for optimistic locking)
+
+        Returns:
+            Updated ProcessingJob in PROCESSING state with incremented version
+
+        Raises:
+            JobNotFoundError: If job doesn't exist
+            JobConcurrencyError: If version mismatch (another worker claimed it)
+            InvalidStateTransition: If job is not in PENDING state
+        """
+        pass
+
+    @abstractmethod
+    async def mark_complete(
+        self,
+        job_id: str,
+        version: int,
+        result_records: int,
+        result_url: Optional[str] = None,
+    ) -> ProcessingJob:
+        """
+        Mark a job as COMPLETE with results.
+
+        Updates job status to COMPLETE and records result metadata.
+
+        Args:
+            job_id: Job identifier
+            version: Current version (for optimistic locking)
+            result_records: Number of records processed successfully
+            result_url: Optional URL to results
+
+        Returns:
+            Updated ProcessingJob in COMPLETE state
+
+        Raises:
+            JobNotFoundError: If job doesn't exist
+            JobConcurrencyError: If version mismatch
+            InvalidStateTransition: If job is not in PROCESSING state
+        """
+        pass
+
+    @abstractmethod
+    async def mark_failed(
+        self,
+        job_id: str,
+        version: int,
+        error_message: str,
+    ) -> ProcessingJob:
+        """
+        Mark a job as FAILED with error information.
+
+        Updates job status to FAILED and records error message.
+
+        Args:
+            job_id: Job identifier
+            version: Current version (for optimistic locking)
+            error_message: Description of the failure
+
+        Returns:
+            Updated ProcessingJob in FAILED state
+
+        Raises:
+            JobNotFoundError: If job doesn't exist
+            JobConcurrencyError: If version mismatch
+            InvalidStateTransition: If job is not in PROCESSING state
+        """
+        pass

@@ -309,6 +309,84 @@ class JobRepository(IJobRepository):
 
         return await self.save(job)
 
+    async def claim_job(
+        self,
+        job_id: str,
+        expected_version: int,
+    ) -> ProcessingJob:
+        """
+        Claim a job for processing with optimistic locking.
+
+        Uses row-level locking via version check in UPDATE statement.
+        """
+        job = await self.get_by_id(job_id)
+
+        # Check version for optimistic locking
+        if job.version != expected_version:
+            raise JobConcurrencyError(
+                job_id=job_id,
+                expected_version=expected_version,
+                actual_version=job.version,
+            )
+
+        # Transition to PROCESSING (validates the transition)
+        job.transition_to_processing()
+
+        # Save with optimistic locking
+        return await self.save(job)
+
+    async def mark_complete(
+        self,
+        job_id: str,
+        version: int,
+        result_records: int,
+        result_url: Optional[str] = None,
+    ) -> ProcessingJob:
+        """
+        Mark a job as COMPLETE with results.
+        """
+        job = await self.get_by_id(job_id)
+
+        # Check version for optimistic locking
+        if job.version != version:
+            raise JobConcurrencyError(
+                job_id=job_id,
+                expected_version=version,
+                actual_version=job.version,
+            )
+
+        # Transition to COMPLETE
+        job.transition_to_complete(
+            result_records=result_records,
+            result_url=result_url,
+        )
+
+        return await self.save(job)
+
+    async def mark_failed(
+        self,
+        job_id: str,
+        version: int,
+        error_message: str,
+    ) -> ProcessingJob:
+        """
+        Mark a job as FAILED with error information.
+        """
+        job = await self.get_by_id(job_id)
+
+        # Check version for optimistic locking
+        if job.version != version:
+            raise JobConcurrencyError(
+                job_id=job_id,
+                expected_version=version,
+                actual_version=job.version,
+            )
+
+        # Transition to FAILED
+        job.transition_to_failed(error_message=error_message)
+
+        return await self.save(job)
+
 
 # -----------------------------------------------------------------
 # In-Memory Repository (for testing)
@@ -438,6 +516,86 @@ class InMemoryJobRepository(IJobRepository):
     def clear(self) -> None:
         """Clear all jobs (for testing)."""
         self._jobs.clear()
+
+    async def claim_job(
+        self,
+        job_id: str,
+        expected_version: int,
+    ) -> ProcessingJob:
+        """
+        Claim a job for processing with optimistic locking.
+
+        Atomically transitions PENDING -> PROCESSING if version matches.
+        """
+        job = await self.get_by_id(job_id)
+
+        # Check version for optimistic locking
+        if job.version != expected_version:
+            raise JobConcurrencyError(
+                job_id=job_id,
+                expected_version=expected_version,
+                actual_version=job.version,
+            )
+
+        # Transition to PROCESSING (this validates the transition is allowed)
+        job.transition_to_processing()
+
+        # Save and return
+        return await self.save(job)
+
+    async def mark_complete(
+        self,
+        job_id: str,
+        version: int,
+        result_records: int,
+        result_url: Optional[str] = None,
+    ) -> ProcessingJob:
+        """
+        Mark a job as COMPLETE with results.
+        """
+        job = await self.get_by_id(job_id)
+
+        # Check version for optimistic locking
+        if job.version != version:
+            raise JobConcurrencyError(
+                job_id=job_id,
+                expected_version=version,
+                actual_version=job.version,
+            )
+
+        # Transition to COMPLETE
+        job.transition_to_complete(
+            result_records=result_records,
+            result_url=result_url,
+        )
+
+        # Save and return
+        return await self.save(job)
+
+    async def mark_failed(
+        self,
+        job_id: str,
+        version: int,
+        error_message: str,
+    ) -> ProcessingJob:
+        """
+        Mark a job as FAILED with error information.
+        """
+        job = await self.get_by_id(job_id)
+
+        # Check version for optimistic locking
+        if job.version != version:
+            raise JobConcurrencyError(
+                job_id=job_id,
+                expected_version=version,
+                actual_version=job.version,
+            )
+
+        # Transition to FAILED
+        job.transition_to_failed(error_message=error_message)
+
+        # Save and return
+        return await self.save(job)
 
 
 # -----------------------------------------------------------------

@@ -177,6 +177,7 @@ class UploadPipeline:
                             job_id=upload_response.job_id,
                             vertical=vertical,
                             file_name=filename,
+                            storage_key=upload_response.storage_key,  # Pass actual file location
                             tenant_id=tenant_id,
                             complexity_tier=upload_response.complexity_tier,
                         )
@@ -328,8 +329,11 @@ class MockPrefectClient:
                 # Get tenant_id from kwargs if provided
                 tenant_id = kwargs.get("tenant_id")
 
+                # Use storage_key if available (actual file location), fallback to filename
+                storage_key = kwargs.get("storage_key", file_name)
+
                 result = await data_ingestion_flow(
-                    data_source=file_name,
+                    data_source=storage_key,  # Use actual storage location
                     enable_validation=True,
                     enable_ai_labeling=True,
                     enable_pii_redaction=True,
