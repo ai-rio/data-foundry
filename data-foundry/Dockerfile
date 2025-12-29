@@ -1,7 +1,7 @@
 # Phase 6.5 Dockerfile for Data Foundry API
 # FastAPI application for load testing and validation
 
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 # Set environment variables for Python
 ENV PYTHONUNBUFFERED=1 \
