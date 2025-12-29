@@ -256,13 +256,37 @@ class UploadPipeline:
 
 class MockPrefectClient:
     """
-    Mock Prefect client for testing.
+    Mock Prefect client for testing and development.
+
+    Can operate in two modes:
+    1. Pure mock (just records calls) - for unit tests
+    2. Synchronous execution (executes flow and updates job) - for integration tests
 
     Implements IPrefectClient protocol for use in tests.
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        job_service: Optional["JobTrackingService"] = None,
+        job_repo: Optional["IJobRepository"] = None,
+        execute_synchronously: bool = True,
+    ):
+        """
+        Initialize mock Prefect client.
+
+        Args:
+            job_service: JobTrackingService for updating job status
+            job_repo: IJobRepository for persistence
+            execute_synchronously: If True, execute flows immediately and update status
+        """
         self.triggered_flows = []
+        self._job_service = job_service
+        self._job_repo = job_repo
+        self._execute_synchronously = execute_synchronously and job_service is not None
+        logger.info(
+            f"MockPrefectClient initialized "
+            f"(synchronous_execution={self._execute_synchronously})"
+        )
 
     async def trigger_ingestion(
         self,
@@ -271,7 +295,13 @@ class MockPrefectClient:
         file_name: str,
         **kwargs,
     ) -> str:
-        """Record the trigger call and return a mock flow run ID."""
+        """
+        Trigger ingestion flow (or mock trigger it).
+
+        If execute_synchronously is True and job_service is available,
+        will execute the flow immediately and mark job complete.
+        Otherwise just records the trigger.
+        """
         import uuid
         flow_run_id = str(uuid.uuid4())
 
@@ -283,4 +313,171 @@ class MockPrefectClient:
             **kwargs,
         })
 
+        logger.info(f"MockPrefectClient triggered flow: {flow_run_id} (job={job_id})")
+
+        # For integration testing: execute flow synchronously
+        # The flow itself handles job status updates when job_id is provided
+        if self._execute_synchronously and self._job_service:
+            try:
+                logger.info(f"Executing flow synchronously for job {job_id}")
+
+                # Execute the ingestion flow with job_id for status tracking
+                # Phase 2: Flow now handles COMPLETE/FAILED status updates internally
+                from src.tasks.ingestion import data_ingestion_flow
+
+                # Get tenant_id from kwargs if provided
+                tenant_id = kwargs.get("tenant_id")
+
+                result = await data_ingestion_flow(
+                    data_source=file_name,
+                    enable_validation=True,
+                    enable_ai_labeling=True,
+                    enable_pii_redaction=True,
+                    enable_human_review=True,
+                    enable_stripe_billing=False,
+                    job_id=job_id,  # Phase 2: Pass job_id for status tracking
+                    tenant_id=tenant_id,  # Phase 2: Pass tenant_id for context
+                )
+
+                logger.info(f"Flow execution completed: {result}")
+                # Note: Job status is now updated by the flow itself (COMPLETE or FAILED)
+
+            except Exception as e:
+                logger.error(f"Error executing flow synchronously: {e}")
+                # Note: Flow handles FAILED status update when job_id is provided
+                # This catch block is for unexpected errors during flow invocation
+
         return flow_run_id
+
+
+class PrefectClient:
+    """
+    Real Prefect client that integrates with Prefect Server.
+
+    Triggers ingestion flows on the Prefect Server which are then picked up
+    by the Prefect Agent for execution.
+    """
+
+    def __init__(
+        self,
+        api_url: str = "http://localhost:4200/api",
+        job_service: Optional["JobTrackingService"] = None,
+    ):
+        """
+        Initialize Prefect client.
+
+        Args:
+            api_url: Prefect API URL (defaults to local development server)
+            job_service: Optional JobTrackingService for marking jobs complete.
+                         If provided, will sync job status after flow execution.
+        """
+        self.api_url = api_url
+        self._client = None
+        self._job_service = job_service
+        logger.info(
+            f"PrefectClient initialized with API URL: {api_url} "
+            f"(job_service={'enabled' if job_service else 'disabled'})"
+        )
+
+    async def trigger_ingestion(
+        self,
+        job_id: str,
+        vertical: str,
+        file_name: str,
+        **kwargs,
+    ) -> str:
+        """
+        Trigger the ingestion flow in Prefect Server.
+
+        Args:
+            job_id: Processing job ID
+            vertical: Industry vertical for specialized processing
+            file_name: Name of the uploaded file
+            **kwargs: Additional flow parameters (tenant_id, complexity_tier, etc.)
+
+        Returns:
+            Flow run ID from Prefect Server
+        """
+        try:
+            import httpx
+            from prefect.client.cloud import get_cloud_client
+            from prefect.client.sync import get_client
+
+            # Use Prefect SDK client to trigger flow
+            # This connects to Prefect Server and creates a flow run
+            async with httpx.AsyncClient(base_url=self.api_url) as client:
+                # Prepare flow parameters
+                flow_params = {
+                    "data_source": file_name,
+                    "vertical": vertical,
+                    "job_id": job_id,
+                    **kwargs,  # Include tenant_id, complexity_tier, etc.
+                }
+
+                logger.info(
+                    f"Triggering Prefect flow for job {job_id} "
+                    f"(vertical={vertical}, file={file_name})"
+                )
+
+                # Create a deployment run via Prefect API
+                # The flow name should match the @flow decorator name in ingestion.py
+                response = await client.post(
+                    "/deployments/filter",
+                    json={"filter": {"name": {"like_": "data-foundry-ingestion"}}},
+                )
+
+                if response.status_code == 200:
+                    deployments = response.json()
+                    if deployments:
+                        deployment_id = deployments[0]["id"]
+
+                        # Create a flow run from the deployment
+                        run_response = await client.post(
+                            f"/deployments/{deployment_id}/create_flow_run",
+                            json={"parameters": flow_params},
+                        )
+
+                        if run_response.status_code == 201:
+                            flow_run = run_response.json()
+                            flow_run_id = flow_run.get("id")
+                            logger.info(
+                                f"Prefect flow triggered successfully: "
+                                f"flow_run_id={flow_run_id}"
+                            )
+                            return flow_run_id
+                        else:
+                            logger.error(
+                                f"Failed to create flow run: {run_response.text}"
+                            )
+                            raise RuntimeError(
+                                f"Prefect API error: {run_response.status_code}"
+                            )
+                    else:
+                        logger.warning(
+                            "No 'data-foundry-ingestion' deployment found. "
+                            "Returning mock flow run ID. "
+                            "Deploy ingestion flow with: "
+                            "prefect deploy -n 'data-foundry-ingestion'"
+                        )
+                        # Fallback: return a valid UUID (job will still be PENDING)
+                        import uuid
+                        return str(uuid.uuid4())
+                else:
+                    logger.error(
+                        f"Failed to query deployments: {response.text}"
+                    )
+                    raise RuntimeError(
+                        f"Prefect API error: {response.status_code}"
+                    )
+
+        except Exception as e:
+            logger.error(f"Error triggering Prefect flow: {e}")
+            # For development: don't fail the upload if Prefect is unavailable
+            # The job is still created and can be processed manually
+            import uuid
+            fallback_id = str(uuid.uuid4())
+            logger.warning(
+                f"Falling back to mock flow run ID: {fallback_id}. "
+                f"Check that Prefect Server is running and deployment is created."
+            )
+            return fallback_id

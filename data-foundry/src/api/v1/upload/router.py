@@ -2,9 +2,15 @@
 Upload API Router
 
 FastAPI router for file upload endpoints.
+
+Phase 2 Integration:
+- PostgreSQL JobRepository for persistent job tracking
+- Real PrefectClient for triggering Prefect flows
+- Backward compatible with unit tests (use their own InMemoryJobRepository fixtures)
 """
 
 import logging
+import os
 from typing import Optional
 
 from fastapi import (
@@ -12,11 +18,14 @@ from fastapi import (
     Depends,
     File,
     Form,
+    Header,
     HTTPException,
+    Request,
     UploadFile,
     status,
 )
 from fastapi.responses import JSONResponse
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.v1.upload.contracts import (
     UploadResponseContract,
@@ -24,9 +33,10 @@ from src.api.v1.upload.contracts import (
     UploadMetadataContract,
 )
 from src.application.upload_service import UploadService, UploadResponse
-from src.application.upload_pipeline import UploadPipeline, PipelineResult
+from src.application.upload_pipeline import UploadPipeline, PipelineResult, PrefectClient
 from src.domain.file.exceptions import FileValidationError
 from src.domain.storage.exceptions import StorageError
+from src.database.connection import db_connection
 
 logger = logging.getLogger(__name__)
 
@@ -37,16 +47,39 @@ router = APIRouter(prefix="/upload", tags=["upload"])
 # Dependency Injection
 # -----------------------------------------------------------------
 
-async def get_upload_service() -> UploadService:
+async def get_db_session() -> AsyncSession:
     """
-    Dependency: Get configured UploadService.
+    Dependency: Get async database session.
 
-    In production, this would be configured with real services.
+    SOLID: Dependency Inversion - inject session as dependency.
+    This enables PostgreSQL persistence while maintaining test isolation.
+
+    Returns:
+        AsyncSession: SQLAlchemy async session from connection pool
+    """
+    async with db_connection.get_session() as session:
+        yield session
+
+
+async def get_upload_service(
+    session: AsyncSession = Depends(get_db_session),
+) -> UploadService:
+    """
+    Dependency: Get configured UploadService with PostgreSQL persistence.
+
+    SOLID:
+    - Dependency Inversion: Session injected as dependency
+    - Single Responsibility: Only creates and wires UploadService
+
+    Args:
+        session: Async database session from get_db_session dependency
+
+    Returns:
+        UploadService configured with PostgreSQL JobRepository
     """
     from src.application.file_validation_service import FileValidationService
     from src.infrastructure.storage.local_storage_service import LocalStorageService
-    from src.infrastructure.repositories.job_repository import InMemoryJobRepository
-    from src.domain.file.validators import CompositeFileValidator
+    from src.infrastructure.repositories.job_repository import JobRepository
 
     # Create default validator
     validator = FileValidationService()
@@ -54,8 +87,8 @@ async def get_upload_service() -> UploadService:
     # For development, use local storage
     storage = LocalStorageService()
 
-    # For development, use in-memory repository
-    job_repo = InMemoryJobRepository()
+    # Use PostgreSQL repository with injected session
+    job_repo = JobRepository(session)
 
     return UploadService(
         validator=validator._composite,  # Use the composite validator
@@ -64,19 +97,38 @@ async def get_upload_service() -> UploadService:
     )
 
 
-async def get_upload_pipeline() -> UploadPipeline:
+async def get_upload_pipeline(
+    session: AsyncSession = Depends(get_db_session),
+) -> UploadPipeline:
     """
-    Dependency: Get configured UploadPipeline.
+    Dependency: Get configured UploadPipeline with real Prefect integration.
+
+    Phase 2 Integration:
+    - PostgreSQL JobRepository for persistent job tracking
+    - Real PrefectClient for triggering Prefect flows
+    - Job status updates handled by flow (job_id passed to flow)
+
+    SOLID:
+    - Dependency Inversion: Session injected, not created
+    - Single Responsibility: Only handles dependency wiring
+    - Interface Segregation: Uses IJobRepository interface
+
+    Args:
+        session: Async database session from get_db_session dependency
+
+    Returns:
+        UploadPipeline configured with real Prefect and PostgreSQL
     """
     from src.application.file_validation_service import FileValidationService
     from src.application.job_tracking_service import JobTrackingService
-    from src.application.upload_pipeline import MockPrefectClient
     from src.infrastructure.storage.local_storage_service import LocalStorageService
-    from src.infrastructure.repositories.job_repository import InMemoryJobRepository
+    from src.infrastructure.repositories.job_repository import JobRepository
 
     validator = FileValidationService()
     storage = LocalStorageService()
-    job_repo = InMemoryJobRepository()
+
+    # Use PostgreSQL repository with injected session
+    job_repo = JobRepository(session)
 
     upload_service = UploadService(
         validator=validator._composite,
@@ -86,8 +138,19 @@ async def get_upload_pipeline() -> UploadPipeline:
 
     job_service = JobTrackingService(repo=job_repo)
 
-    # Mock Prefect client for development
-    prefect_client = MockPrefectClient()
+    # Use real PrefectClient for Phase 2 integration
+    # Get Prefect API URL from environment (default to local development server)
+    prefect_api_url = os.environ.get("PREFECT_API_URL", "http://localhost:4200/api")
+
+    prefect_client = PrefectClient(
+        api_url=prefect_api_url,
+        job_service=job_service,
+    )
+
+    logger.info(
+        f"UploadPipeline configured with PostgreSQL JobRepository "
+        f"and PrefectClient (api_url={prefect_api_url})"
+    )
 
     return UploadPipeline(
         upload_service=upload_service,
@@ -97,13 +160,22 @@ async def get_upload_pipeline() -> UploadPipeline:
 
 
 async def get_current_tenant(
-    # In production, this would extract tenant from JWT token
+    x_tenant_id: Optional[str] = Header(default=None, alias="X-Tenant-ID"),
 ) -> str:
     """
-    Dependency: Get current tenant ID from authentication.
+    Dependency: Get current tenant ID from request header or default.
 
-    Placeholder for actual auth integration.
+    In production, this would extract tenant from JWT token.
+    For development/testing, reads from X-Tenant-ID header.
+
+    Args:
+        x_tenant_id: Optional tenant ID from X-Tenant-ID header
+
+    Returns:
+        The tenant ID from header, or default "test-tenant-001" if not provided
     """
+    if x_tenant_id:
+        return x_tenant_id
     return "test-tenant-001"
 
 

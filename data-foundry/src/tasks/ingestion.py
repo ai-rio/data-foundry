@@ -1059,11 +1059,19 @@ async def data_ingestion_flow(
     enable_pii_redaction: bool = True,
     enable_human_review: bool = True,
     enable_stripe_billing: bool = False,
+    job_id: str | None = None,
+    tenant_id: str | None = None,
 ):
     """
     Main ingestion flow that orchestrates the entire data processing pipeline.
 
     P02-005: Integration with Stripe metered billing for usage tracking.
+    Phase 2: Job status updates via PostgreSQL JobRepository.
+
+    SOLID Principles:
+    - Single Responsibility: Flow focuses on data processing, status updates are separate concern
+    - Open/Closed: Extensible through parameters
+    - Dependency Injection: JobTrackingService injected when job_id is provided
 
     Args:
         data_source: Source of data to process
@@ -1072,9 +1080,18 @@ async def data_ingestion_flow(
         enable_pii_redaction: Whether to apply PII redaction
         enable_human_review: Whether to route low confidence for human review
         enable_stripe_billing: Whether to report usage to Stripe for metered billing
+        job_id: Optional job ID for status tracking (Phase 2 integration)
+        tenant_id: Optional tenant ID for multi-tenant context
+
+    Note:
+        When job_id is provided, the flow will update job status to COMPLETE on success
+        or FAILED on error, using the PostgreSQL JobRepository.
     """
     logger = get_run_logger()
-    logger.info("Starting Data Foundry Ingestion Flow")
+    logger.info(
+        f"Starting Data Foundry Ingestion Flow "
+        f"(job_id={job_id}, tenant_id={tenant_id})"
+    )
 
     # Track statistics for all validation outcomes
     stats = {
@@ -1192,6 +1209,14 @@ async def data_ingestion_flow(
                 source="ingestion_pipeline"
             )
 
+        # Phase 2: Step 10 - Update job status to COMPLETE
+        if job_id:
+            await _update_job_status_complete(
+                job_id=job_id,
+                result_records=stats.get("valid_records", 0),
+                logger=logger,
+            )
+
         logger.info("Data Ingestion Flow completed successfully")
         return {
             **stats,
@@ -1202,7 +1227,108 @@ async def data_ingestion_flow(
 
     except Exception as e:
         logger.error(f"Data Ingestion Flow failed: {str(e)}")
+
+        # Phase 2: Update job status to FAILED on exception
+        if job_id:
+            await _update_job_status_failed(
+                job_id=job_id,
+                error_message=str(e),
+                logger=logger,
+            )
+
         raise
+
+
+# -----------------------------------------------------------------
+# Phase 2: Job Status Update Helpers
+# -----------------------------------------------------------------
+
+async def _update_job_status_complete(
+    job_id: str,
+    result_records: int,
+    logger,
+) -> None:
+    """
+    Update job status to COMPLETE in PostgreSQL.
+
+    Phase 2 integration: Uses JobTrackingService to update job status
+    after successful flow execution.
+
+    SOLID Principles:
+    - Single Responsibility: Only handles status update to COMPLETE
+    - Dependency Injection: Creates service with fresh database session
+
+    Args:
+        job_id: Processing job ID to update
+        result_records: Number of records successfully processed
+        logger: Prefect run logger for consistent logging
+    """
+    try:
+        from src.application.job_tracking_service import JobTrackingService
+        from src.infrastructure.repositories.job_repository import JobRepository
+        from src.database.connection import db_connection
+
+        logger.info(f"Updating job {job_id} status to COMPLETE ({result_records} records)")
+
+        async with db_connection.get_session() as session:
+            job_repo = JobRepository(session)
+            job_service = JobTrackingService(repo=job_repo)
+
+            await job_service.mark_complete(
+                job_id=job_id,
+                result_records=result_records,
+            )
+
+        logger.info(f"Job {job_id} marked COMPLETE successfully")
+
+    except Exception as e:
+        # Log but don't fail the flow if status update fails
+        # The data processing succeeded, status update is secondary
+        logger.error(f"Failed to update job {job_id} status to COMPLETE: {str(e)}")
+
+
+async def _update_job_status_failed(
+    job_id: str,
+    error_message: str,
+    logger,
+) -> None:
+    """
+    Update job status to FAILED in PostgreSQL.
+
+    Phase 2 integration: Uses JobTrackingService to update job status
+    when flow execution fails.
+
+    SOLID Principles:
+    - Single Responsibility: Only handles status update to FAILED
+    - Dependency Injection: Creates service with fresh database session
+
+    Args:
+        job_id: Processing job ID to update
+        error_message: Error description for the failure
+        logger: Prefect run logger for consistent logging
+    """
+    try:
+        from src.application.job_tracking_service import JobTrackingService
+        from src.infrastructure.repositories.job_repository import JobRepository
+        from src.database.connection import db_connection
+
+        logger.info(f"Updating job {job_id} status to FAILED: {error_message}")
+
+        async with db_connection.get_session() as session:
+            job_repo = JobRepository(session)
+            job_service = JobTrackingService(repo=job_repo)
+
+            await job_service.mark_failed(
+                job_id=job_id,
+                error_message=error_message,
+            )
+
+        logger.warning(f"Job {job_id} marked FAILED")
+
+    except Exception as e:
+        # Log but don't suppress the original error
+        # We want the original exception to propagate
+        logger.error(f"Failed to update job {job_id} status to FAILED: {str(e)}")
 
 
 @task
