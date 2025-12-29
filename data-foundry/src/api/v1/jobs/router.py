@@ -7,7 +7,7 @@ FastAPI router for job tracking and management.
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 
 from src.api.v1.jobs.contracts import (
     JobStatusContract,
@@ -35,18 +35,31 @@ async def get_job_service() -> JobTrackingService:
     """
     Dependency: Get configured JobTrackingService.
     """
-    from src.infrastructure.repositories.job_repository import InMemoryJobRepository
+    from src.infrastructure.repositories.job_repository import get_shared_in_memory_repository
 
-    # For development, use in-memory repository
-    job_repo = InMemoryJobRepository()
+    # For development, use shared in-memory repository singleton
+    job_repo = get_shared_in_memory_repository()
 
     return JobTrackingService(repo=job_repo)
 
 
-async def get_current_tenant() -> str:
+async def get_current_tenant(
+    x_tenant_id: Optional[str] = Header(default=None, alias="X-Tenant-ID"),
+) -> str:
     """
-    Dependency: Get current tenant ID from authentication.
+    Dependency: Get current tenant ID from request header or default.
+
+    In production, this would extract tenant from JWT token.
+    For development/testing, reads from X-Tenant-ID header.
+
+    Args:
+        x_tenant_id: Optional tenant ID from X-Tenant-ID header
+
+    Returns:
+        The tenant ID from header, or default "test-tenant-001" if not provided
     """
+    if x_tenant_id:
+        return x_tenant_id
     return "test-tenant-001"
 
 

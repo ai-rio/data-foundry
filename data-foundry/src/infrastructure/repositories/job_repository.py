@@ -438,3 +438,44 @@ class InMemoryJobRepository(IJobRepository):
     def clear(self) -> None:
         """Clear all jobs (for testing)."""
         self._jobs.clear()
+
+
+# -----------------------------------------------------------------
+# Shared Singleton Instance (for development/testing)
+# -----------------------------------------------------------------
+
+# Global singleton instance for in-memory repository
+# This ensures all endpoints share the same job storage during development
+_shared_in_memory_repository: Optional[InMemoryJobRepository] = None
+
+
+def get_shared_in_memory_repository() -> InMemoryJobRepository:
+    """
+    Get the shared singleton InMemoryJobRepository instance.
+
+    This function provides a single shared repository instance that all
+    API endpoints can use during development/testing. This solves the issue
+    where separate repository instances meant jobs created in one endpoint
+    were invisible to other endpoints.
+
+    Returns:
+        InMemoryJobRepository: The shared singleton repository instance
+    """
+    global _shared_in_memory_repository
+    if _shared_in_memory_repository is None:
+        _shared_in_memory_repository = InMemoryJobRepository()
+        logger.info("Created shared InMemoryJobRepository singleton")
+    return _shared_in_memory_repository
+
+
+def reset_shared_in_memory_repository() -> None:
+    """
+    Reset the shared repository singleton.
+
+    This is useful for testing to ensure a clean state between tests.
+    """
+    global _shared_in_memory_repository
+    if _shared_in_memory_repository is not None:
+        _shared_in_memory_repository.clear()
+        _shared_in_memory_repository = None
+        logger.info("Reset shared InMemoryJobRepository singleton")
