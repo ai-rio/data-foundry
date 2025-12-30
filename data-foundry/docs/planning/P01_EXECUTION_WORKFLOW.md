@@ -30,11 +30,11 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
 #### Task P01-001: AML Database Schema Design
 **Effort:** 4 hours
 **Method:** test-later (design-first, validate with tests in GROUP 2)
-**Agent:** No specific agent needed (design documentation)
+**Agent:** `code-documentation:docs-architect` (documentation specialist)
 
-**Workflow:**
+**Workflow (6-Step Process):**
 
-1. **Implementation** (2h)
+1. **Implementation** (2h) - `code-documentation:docs-architect`
    - Design PostgreSQL schema ERD
    - Define table structures (aml_transaction_labels, audit_reports, expert_reviews, labeling_methodology_versions)
    - Plan indexing strategy
@@ -48,13 +48,21 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
    - Validate index strategy
    - **Gate:** ERD approved, no normalization issues, all audit fields present
 
-3. **Fixes if needed** (1h)
+3. **Fixes if needed** (1h) - `code-documentation:docs-architect`
    - Adjust ERD based on review findings
    - Add missing fields/relationships
-   - Reaudit if changes made
-   - **Loop back to step 2 until gates met**
+   - Update documentation
 
-4. **Commit** (0.5h)
+4. **Reaudit** (0.5h) - `tdd-workflows:code-reviewer`
+   - Verify all review comments addressed
+   - Confirm normalization correct
+   - Validate updated design
+   - **Loop back to step 3 if gates still not met**
+
+5. **Loop until Quality Gates Met**
+   - Repeat steps 3-4 until all quality gates satisfied
+
+6. **Commit** (0.5h)
    - Document final schema design
    - Create SCHEMA_DESIGN.md artifact
    - Ready for P01-002 (migrations)
@@ -64,11 +72,11 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
 #### Task P01-008: AML Configuration Management
 **Effort:** 2 hours
 **Method:** test-later (straightforward configuration addition)
-**Agent:** No specific agent needed (configuration setup)
+**Agent:** `python-development:fastapi-pro` (configuration and backend)
 
-**Workflow:**
+**Workflow (6-Step Process):**
 
-1. **Implementation** (1h)
+1. **Implementation** (1h) - `python-development:fastapi-pro`
    - Add all AML settings to src/core/config.py
    - Create .env.example with new variables
    - Add validation for settings (price > 0, threshold 0-1, etc.)
@@ -81,13 +89,21 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
    - Ensure documentation clear
    - **Gate:** All settings loadable, validation works, no hardcoded secrets
 
-3. **Fixes if needed** (0.5h)
+3. **Fixes if needed** (0.5h) - `python-development:fastapi-pro`
    - Fix validation logic
    - Add missing docstrings
-   - Reaudit
-   - **Loop until gates met**
+   - Update configuration
 
-4. **Commit** (0.5h)
+4. **Reaudit** (0.5h) - `tdd-workflows:code-reviewer`
+   - Verify all review comments addressed
+   - Check validation comprehensive
+   - Confirm no hardcoded values
+   - **Loop back to step 3 if gates still not met**
+
+5. **Loop until Quality Gates Met**
+   - Repeat steps 3-4 until all quality gates satisfied
+
+6. **Commit** (0.5h)
    - Finalize config.py
    - Ready for P01-004 and P01-009 (AML labeling tasks)
 
@@ -103,7 +119,7 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
 **Method:** hybrid (schema validation needed)
 **Agent:** `data-engineering:data-engineer` (database specialist)
 
-**Workflow:**
+**Workflow (6-Step Process):**
 
 1. **Implementation** (1.5h) - `data-engineering:data-engineer`
    - Create migration file: 001_add_aml_transaction_labels_table.py
@@ -122,10 +138,18 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
 3. **Fixes if needed** (0.5h) - `data-engineering:data-engineer`
    - Adjust migration SQL if needed
    - Fix rollback issues
-   - Reaudit
-   - **Loop until gates met**
+   - Update migration files
 
-4. **Commit** (0.5h)
+4. **Reaudit** (0.5h) - `tdd-workflows:code-reviewer`
+   - Verify all review comments addressed
+   - Re-test rollback functionality
+   - Confirm schema matches design
+   - **Loop back to step 3 if gates still not met**
+
+5. **Loop until Quality Gates Met**
+   - Repeat steps 3-4 until all quality gates satisfied
+
+6. **Commit** (0.5h)
    - Finalize migrations
    - Ready for P01-003 (ORM models)
 
@@ -136,7 +160,7 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
 **Method:** full-tdd (models are critical, need comprehensive tests)
 **Agent:** `tdd-workflows:tdd-orchestrator`
 
-**Workflow:**
+**Workflow (6-Step Process):**
 
 1. **Implementation** (2h) - `tdd-workflows:tdd-orchestrator`
    - Create AMLTransactionLabel model
@@ -157,10 +181,18 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
    - Add missing relationships
    - Fix validation logic
    - Implement missing methods
-   - Reaudit
-   - **Loop until gates met**
+   - Update model implementations
 
-4. **Commit** (0.5h)
+4. **Reaudit** (0.5h) - `tdd-workflows:code-reviewer`
+   - Verify all review comments addressed
+   - Re-test model relationships
+   - Confirm schema alignment
+   - **Loop back to step 3 if gates still not met**
+
+5. **Loop until Quality Gates Met**
+   - Repeat steps 3-4 until all quality gates satisfied
+
+6. **Commit** (0.5h)
    - Finalize ORM models
    - Ready for P01-004, P01-005, P01-007, P01-010
 
@@ -176,7 +208,7 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
 **Method:** full-tdd (critical business logic)
 **Agent:** `tdd-workflows:tdd-orchestrator`
 
-**Workflow:**
+**Workflow (6-Step Process):**
 
 1. **Implementation** (3h) - `tdd-workflows:tdd-orchestrator`
    - Rewrite apply_ai_labeling() in src/tasks/ingestion.py
@@ -192,14 +224,22 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
    - Check reasoning is explainable
    - **Gate:** Prompt valid, parsing robust, confidence accurate, reasoning clear
 
-3. **Fixes if needed** (1.5h) - `python-development:fastapi-pro`
+3. **Fixes if needed** (1.5h) - `tdd-workflows:tdd-orchestrator`
    - Adjust prompt if labels incorrect
    - Fix response parsing errors
    - Improve error handling
-   - Reaudit
-   - **Loop until gates met**
+   - Update implementations
 
-4. **Commit** (0.5h)
+4. **Reaudit** (1h) - `tdd-workflows:code-reviewer`
+   - Verify all review comments addressed
+   - Re-test FATF alignment
+   - Confirm edge cases handled
+   - **Loop back to step 3 if gates still not met**
+
+5. **Loop until Quality Gates Met**
+   - Repeat steps 3-4 until all quality gates satisfied
+
+6. **Commit** (0.5h)
    - Finalize AML labeling
    - Ready for P01-005, P01-006, P01-009
 
@@ -210,7 +250,7 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
 **Method:** full-tdd (agreement calculation is measurable)
 **Agent:** `tdd-workflows:tdd-orchestrator`
 
-**Workflow:**
+**Workflow (6-Step Process):**
 
 1. **Implementation** (2h) - `tdd-workflows:tdd-orchestrator`
    - Create CohenKappaCalculator class in src/core/agreement_calculator.py
@@ -226,14 +266,22 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
    - Test performance with 1000+ records
    - **Gate:** Math correct, thresholds accurate, edge cases handled
 
-3. **Fixes if needed** (1h) - `unit-testing:debugger`
+3. **Fixes if needed** (1h) - `tdd-workflows:tdd-orchestrator`
    - Debug calculation if results incorrect
    - Optimize performance if needed
    - Fix edge case handling
-   - Reaudit
-   - **Loop until gates met**
+   - Update implementations
 
-4. **Commit** (0.5h)
+4. **Reaudit** (0.5h) - `tdd-workflows:code-reviewer`
+   - Verify all review comments addressed
+   - Re-test mathematical correctness
+   - Confirm performance acceptable
+   - **Loop back to step 3 if gates still not met**
+
+5. **Loop until Quality Gates Met**
+   - Repeat steps 3-4 until all quality gates satisfied
+
+6. **Commit** (0.5h)
    - Finalize Cohen's Kappa
    - Ready for P01-006
 
@@ -244,7 +292,7 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
 **Method:** hybrid (service extension with structured output)
 **Agent:** `python-development:fastapi-pro`
 
-**Workflow:**
+**Workflow (6-Step Process):**
 
 1. **Implementation** (1.5h) - `python-development:fastapi-pro`
    - Add aml_completion() method to AIService
@@ -263,10 +311,18 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
 3. **Fixes if needed** (0.5h) - `python-development:fastapi-pro`
    - Fix response parsing issues
    - Improve validation logic
-   - Reaudit
-   - **Loop until gates met**
+   - Update service implementation
 
-4. **Commit** (0.5h)
+4. **Reaudit** (0.5h) - `tdd-workflows:code-reviewer`
+   - Verify all review comments addressed
+   - Re-test response validation
+   - Confirm cost tracking accurate
+   - **Loop back to step 3 if gates still not met**
+
+5. **Loop until Quality Gates Met**
+   - Repeat steps 3-4 until all quality gates satisfied
+
+6. **Commit** (0.5h)
    - Finalize AI service extension
    - Ready for P01-004 (uses this service)
 
@@ -282,7 +338,7 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
 **Method:** full-tdd (Prefect flow orchestration)
 **Agent:** `tdd-workflows:tdd-orchestrator`
 
-**Workflow:**
+**Workflow (6-Step Process):**
 
 1. **Implementation** (2.5h) - `tdd-workflows:tdd-orchestrator`
    - Update data_ingestion_flow() in src/tasks/ingestion.py
@@ -299,14 +355,22 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
    - Verify audit report generation integrated
    - **Gate:** Flow sequence correct, all tasks executed, error handling complete
 
-3. **Fixes if needed** (1h) - `python-development:fastapi-pro`
+3. **Fixes if needed** (1h) - `tdd-workflows:tdd-orchestrator`
    - Fix task sequencing if incorrect
    - Adjust threshold logic
    - Improve error handling
-   - Reaudit
-   - **Loop until gates met**
+   - Update flow implementation
 
-4. **Commit** (0.5h)
+4. **Reaudit** (1h) - `tdd-workflows:code-reviewer`
+   - Verify all review comments addressed
+   - Re-test task orchestration
+   - Confirm threshold logic correct
+   - **Loop back to step 3 if gates still not met**
+
+5. **Loop until Quality Gates Met**
+   - Repeat steps 3-4 until all quality gates satisfied
+
+6. **Commit** (0.5h)
    - Finalize ingestion flow
    - Ready for P01-007, P01-010, P01-014
 
@@ -317,7 +381,7 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
 **Method:** hybrid (database persistence with batch optimization)
 **Agent:** `data-engineering:data-engineer`
 
-**Workflow:**
+**Workflow (6-Step Process):**
 
 1. **Implementation** (1.5h) - `data-engineering:data-engineer`
    - Implement save_aml_labels_to_database() task
@@ -337,10 +401,18 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
    - Optimize batch insert if slow
    - Fix transaction issues
    - Improve error logging
-   - Reaudit
-   - **Loop until gates met**
+   - Update implementations
 
-4. **Commit** (0.5h)
+4. **Reaudit** (0.5h) - `tdd-workflows:code-reviewer`
+   - Verify all review comments addressed
+   - Re-test batch performance
+   - Confirm transaction handling correct
+   - **Loop back to step 3 if gates still not met**
+
+5. **Loop until Quality Gates Met**
+   - Repeat steps 3-4 until all quality gates satisfied
+
+6. **Commit** (0.5h)
    - Finalize label saving
    - Ready for P01-010, P01-013
 
@@ -351,7 +423,7 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
 **Method:** hybrid (service layer with AML-specific fields)
 **Agent:** `python-development:fastapi-pro`
 
-**Workflow:**
+**Workflow (6-Step Process):**
 
 1. **Implementation** (1.5h) - `python-development:fastapi-pro`
    - Extend mark_complete() method with AML fields
@@ -369,10 +441,18 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
 3. **Fixes if needed** (0.5h) - `python-development:fastapi-pro`
    - Fix metric calculation errors
    - Improve data retrieval logic
-   - Reaudit
-   - **Loop until gates met**
+   - Update service implementation
 
-4. **Commit** (0.5h)
+4. **Reaudit** (0.5h) - `tdd-workflows:code-reviewer`
+   - Verify all review comments addressed
+   - Re-test metric calculations
+   - Confirm data persistence correct
+   - **Loop back to step 3 if gates still not met**
+
+5. **Loop until Quality Gates Met**
+   - Repeat steps 3-4 until all quality gates satisfied
+
+6. **Commit** (0.5h)
    - Finalize job tracking service
    - Ready for P01-011, P01-012
 
@@ -388,7 +468,7 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
 **Method:** test-later (contract definitions)
 **Agent:** `python-development:fastapi-pro`
 
-**Workflow:**
+**Workflow (6-Step Process):**
 
 1. **Implementation** (1h) - `python-development:fastapi-pro`
    - Add AML-specific fields to JobStatusContract
@@ -406,10 +486,18 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
 3. **Fixes if needed** (0.5h) - `python-development:fastapi-pro`
    - Add missing fields
    - Fix serialization logic
-   - Reaudit
-   - **Loop until gates met**
+   - Update contract definitions
 
-4. **Commit** (0.5h)
+4. **Reaudit** (0.5h) - `tdd-workflows:code-reviewer`
+   - Verify all review comments addressed
+   - Re-test serialization
+   - Confirm all fields valid
+   - **Loop back to step 3 if gates still not met**
+
+5. **Loop until Quality Gates Met**
+   - Repeat steps 3-4 until all quality gates satisfied
+
+6. **Commit** (0.5h)
    - Finalize API contracts
    - Ready for P01-012, P01-013
 
@@ -420,7 +508,7 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
 **Method:** hybrid (endpoint with AML data)
 **Agent:** `python-development:fastapi-pro`
 
-**Workflow:**
+**Workflow (6-Step Process):**
 
 1. **Implementation** (1h) - `python-development:fastapi-pro`
    - Update job_to_contract() helper function
@@ -437,10 +525,18 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
 3. **Fixes if needed** (0.5h) - `python-development:fastapi-pro`
    - Fix response building logic
    - Add missing fields
-   - Reaudit
-   - **Loop until gates met**
+   - Update endpoint implementation
 
-4. **Commit** (0.5h)
+4. **Reaudit** (0.5h) - `tdd-workflows:code-reviewer`
+   - Verify all review comments addressed
+   - Re-test endpoint response structure
+   - Confirm AML fields correct
+   - **Loop back to step 3 if gates still not met**
+
+5. **Loop until Quality Gates Met**
+   - Repeat steps 3-4 until all quality gates satisfied
+
+6. **Commit** (0.5h)
    - Finalize status endpoint
    - Ready for tests and integration
 
@@ -451,7 +547,7 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
 **Method:** hybrid (critical fix for pipeline)
 **Agent:** `python-development:fastapi-pro`
 
-**Workflow:**
+**Workflow (6-Step Process):**
 
 1. **Implementation** (1.5h) - `python-development:fastapi-pro`
    - Fix download_results() endpoint in jobs/router.py
@@ -471,10 +567,18 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
    - Debug query issues if no results returned
    - Fix CSV format if incorrect
    - Improve error messages
-   - Reaudit
-   - **Loop until gates met**
+   - Update endpoint implementation
 
-4. **Commit** (0.5h)
+4. **Reaudit** (0.5h) - `tdd-workflows:code-reviewer`
+   - Verify all review comments addressed
+   - Re-test with various record counts
+   - Confirm CSV format correct
+   - **Loop back to step 3 if gates still not met**
+
+5. **Loop until Quality Gates Met**
+   - Repeat steps 3-4 until all quality gates satisfied
+
+6. **Commit** (0.5h)
    - Finalize download endpoint
    - **CRITICAL:** This fixes test harness "0 records downloaded" issue
 
@@ -490,7 +594,7 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
 **Method:** hybrid (reporting with quality validation)
 **Agent:** `tdd-workflows:tdd-orchestrator`
 
-**Workflow:**
+**Workflow (6-Step Process):**
 
 1. **Implementation** (2.5h) - `tdd-workflows:tdd-orchestrator`
    - Create AuditReportGenerator class
@@ -506,14 +610,22 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
    - Test JSON and PDF generation
    - **Gate:** Report complete, sections valid, metrics accurate, both formats work
 
-3. **Fixes if needed** (1h) - `unit-testing:debugger`
+3. **Fixes if needed** (1h) - `tdd-workflows:tdd-orchestrator`
    - Debug report generation if sections missing
    - Fix metric calculation errors
    - Improve formatting
-   - Reaudit
-   - **Loop until gates met**
+   - Update implementations
 
-4. **Commit** (0.5h)
+4. **Reaudit** (1h) - `tdd-workflows:code-reviewer`
+   - Verify all review comments addressed
+   - Re-test report generation
+   - Confirm both JSON and PDF formats work
+   - **Loop back to step 3 if gates still not met**
+
+5. **Loop until Quality Gates Met**
+   - Repeat steps 3-4 until all quality gates satisfied
+
+6. **Commit** (0.5h)
    - Finalize audit report generation
    - Ready for tests and deployment
 
@@ -524,7 +636,7 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
 **Method:** test-later (informational endpoint)
 **Agent:** `python-development:fastapi-pro`
 
-**Workflow:**
+**Workflow (6-Step Process):**
 
 1. **Implementation** (1h) - `python-development:fastapi-pro`
    - Create regulatory/router.py
@@ -542,10 +654,18 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
 3. **Fixes if needed** (0.5h) - `python-development:fastapi-pro`
    - Fix data loading issues
    - Improve caching strategy
-   - Reaudit
-   - **Loop until gates met**
+   - Update endpoint implementation
 
-4. **Commit** (0.5h)
+4. **Reaudit** (0.5h) - `tdd-workflows:code-reviewer`
+   - Verify all review comments addressed
+   - Re-test endpoint and caching
+   - Confirm data accuracy
+   - **Loop back to step 3 if gates still not met**
+
+5. **Loop until Quality Gates Met**
+   - Repeat steps 3-4 until all quality gates satisfied
+
+6. **Commit** (0.5h)
    - Finalize regulatory endpoint
    - Ready for deployment
 
@@ -589,7 +709,7 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
 **Method:** full-tdd (test-driven from start)
 **Agent:** `tdd-workflows:tdd-orchestrator`
 
-**Workflow:**
+**Workflow (6-Step Process):**
 
 1. **Implementation** (3h) - `tdd-workflows:tdd-orchestrator`
    - Create tests/test_aml_labeling.py
@@ -604,14 +724,22 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
    - Validate edge case coverage
    - **Gate:** Coverage >90%, all scenarios tested, edge cases covered
 
-3. **Fixes if needed** (1.5h) - `unit-testing:debugger`
+3. **Fixes if needed** (1.5h) - `tdd-workflows:tdd-orchestrator`
    - Add missing test cases
    - Debug failing tests
    - Improve coverage
-   - Reaudit
-   - **Loop until gates met**
+   - Update test implementations
 
-4. **Commit** (0.5h)
+4. **Reaudit** (1h) - `tdd-workflows:code-reviewer`
+   - Verify all review comments addressed
+   - Re-test coverage metrics
+   - Confirm all edge cases covered
+   - **Loop back to step 3 if gates still not met**
+
+5. **Loop until Quality Gates Met**
+   - Repeat steps 3-4 until all quality gates satisfied
+
+6. **Commit** (0.5h)
    - Finalize unit tests
    - Ready for integration tests
 
@@ -622,7 +750,7 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
 **Method:** full-tdd (end-to-end validation)
 **Agent:** `tdd-workflows:tdd-orchestrator`
 
-**Workflow:**
+**Workflow (6-Step Process):**
 
 1. **Implementation** (2.5h) - `tdd-workflows:tdd-orchestrator`
    - Create tests/test_aml_end_to_end.py
@@ -637,14 +765,22 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
    - Validate error handling
    - **Gate:** Pipeline works end-to-end, audit report present, errors handled
 
-3. **Fixes if needed** (1h) - `unit-testing:debugger`
+3. **Fixes if needed** (1h) - `tdd-workflows:tdd-orchestrator`
    - Debug pipeline failures
    - Fix test data issues
    - Improve error scenarios
-   - Reaudit
-   - **Loop until gates met**
+   - Update test implementations
 
-4. **Commit** (0.5h)
+4. **Reaudit** (1h) - `tdd-workflows:code-reviewer`
+   - Verify all review comments addressed
+   - Re-test complete pipeline
+   - Confirm error handling comprehensive
+   - **Loop back to step 3 if gates still not met**
+
+5. **Loop until Quality Gates Met**
+   - Repeat steps 3-4 until all quality gates satisfied
+
+6. **Commit** (0.5h)
    - Finalize integration tests
    - Ready for test harness update
 
@@ -666,7 +802,7 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
 **Method:** hybrid (infrastructure validation)
 **Agent:** `tdd-workflows:tdd-orchestrator`
 
-**Workflow:**
+**Workflow (6-Step Process):**
 
 1. **Implementation** (2h) - `tdd-workflows:tdd-orchestrator`
    - Update test_harness_phase2_api.py
@@ -683,14 +819,22 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
    - Validate report metrics
    - **Gate:** Test harness shows >0 records, all AML assertions pass
 
-3. **Fixes if needed** (1h) - `unit-testing:debugger`
+3. **Fixes if needed** (1h) - `tdd-workflows:tdd-orchestrator`
    - Debug test failures
    - Fix assertion logic
    - Improve metrics reporting
-   - Reaudit
-   - **Loop until gates met**
+   - Update test harness
 
-4. **Commit** (0.5h)
+4. **Reaudit** (1h) - `tdd-workflows:code-reviewer`
+   - Verify all review comments addressed
+   - Re-run test harness
+   - Confirm >0 records downloaded
+   - **Loop back to step 3 if gates still not met**
+
+5. **Loop until Quality Gates Met**
+   - Repeat steps 3-4 until all quality gates satisfied
+
+6. **Commit** (0.5h)
    - Finalize test harness
    - Ready for staging deployment
 
@@ -740,7 +884,7 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
 **Method:** full-tdd (comprehensive validation)
 **Agent:** `tdd-workflows:tdd-orchestrator`
 
-**Workflow:**
+**Workflow (6-Step Process):**
 
 1. **Implementation** (2h) - `tdd-workflows:tdd-orchestrator`
    - Run all unit tests on staging
@@ -756,14 +900,22 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
    - Validate multi-vertical scenarios
    - **Gate:** All tests pass, performance acceptable, data integrity confirmed
 
-3. **Fixes if needed** (0.5h) - `unit-testing:debugger`
+3. **Fixes if needed** (0.5h) - `tdd-workflows:tdd-orchestrator`
    - Debug failing tests
    - Optimize performance if needed
    - Fix any regressions
-   - Reaudit
-   - **Loop until gates met**
+   - Update implementations
 
-4. **Commit** (0.5h)
+4. **Reaudit** (1h) - `tdd-workflows:code-reviewer`
+   - Verify all review comments addressed
+   - Re-test all scenarios
+   - Confirm performance acceptable
+   - **Loop back to step 3 if gates still not met**
+
+5. **Loop until Quality Gates Met**
+   - Repeat steps 3-4 until all quality gates satisfied
+
+6. **Commit** (0.5h)
    - Staging validation complete
    - Ready for security review
 
@@ -772,11 +924,11 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
 #### Task P01-024: Security & Compliance Review
 **Effort:** 3 hours
 **Method:** hybrid (security audit)
-**Agent:** `tdd-workflows:code-reviewer`
+**Agent:** `full-stack-orchestration:security-auditor` (security specialist)
 
-**Workflow:**
+**Workflow (6-Step Process):**
 
-1. **Implementation** (1.5h) - `tdd-workflows:code-reviewer`
+1. **Implementation** (1.5h) - `full-stack-orchestration:security-auditor`
    - Review code for security vulnerabilities
    - Check data encryption (at rest, in transit)
    - Verify authentication/authorization
@@ -790,14 +942,22 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
    - Confirm regulatory requirements met
    - **Gate:** No critical security issues, compliance documented, audit trail complete
 
-3. **Fixes if needed** (0.5h)
+3. **Fixes if needed** (0.5h) - `full-stack-orchestration:security-auditor`
    - Fix security issues found
    - Add missing compliance controls
    - Improve audit trail
-   - Reaudit
-   - **Loop until gates met**
+   - Update security implementations
 
-4. **Commit** (0.5h)
+4. **Reaudit** (0.5h) - `tdd-workflows:code-reviewer`
+   - Verify all security issues resolved
+   - Re-test compliance controls
+   - Confirm audit trail complete
+   - **Loop back to step 3 if gates still not met**
+
+5. **Loop until Quality Gates Met**
+   - Repeat steps 3-4 until all quality gates satisfied
+
+6. **Commit** (0.5h)
    - Security review complete
    - Ready for production deployment planning
 
@@ -937,14 +1097,22 @@ This document defines the execution workflow for P01 (AML Service MLP Implementa
 
 ## Section 2: Agent Assignments Summary
 
-| Agent | Responsible Tasks | When Used |
-|-------|-------------------|-----------|
-| **`tdd-workflows:tdd-orchestrator`** | P01-003, P01-004, P01-005, P01-006, P01-015, P01-018, P01-019, P01-021, P01-023 | Full TDD + Hybrid (core business logic) |
-| **`tdd-workflows:code-reviewer`** | QA Audit phase for ALL tasks | Every task after implementation |
-| **`python-development:fastapi-pro`** | P01-009, P01-010, P01-011, P01-012, P01-013, P01-016, P01-014 | API, service, and endpoint work |
-| **`data-engineering:data-engineer`** | P01-002, P01-007 | Database migrations and persistence |
-| **`unit-testing:debugger`** | Fixes & debug phase for failing tests | When test failures occur |
-| **No specific agent** | P01-001, P01-008, P01-017, P01-025, P01-026, P01-027, P01-028 | test-later tasks (design, config, docs) |
+| Agent | Responsible Tasks | Phase | Workflow |
+|-------|---|---|---|
+| **`code-documentation:docs-architect`** | P01-001 | Implementation (Step 1) + Fixes (Step 3) | Documentation design & architecture |
+| **`python-development:fastapi-pro`** | P01-008, P01-009, P01-010, P01-011, P01-012, P01-013, P01-016 | Implementation (Step 1) + Fixes (Step 3) | Backend, API, service, endpoint work |
+| **`data-engineering:data-engineer`** | P01-002, P01-007 | Implementation (Step 1) + Fixes (Step 3) | Database migrations and persistence |
+| **`tdd-workflows:tdd-orchestrator`** | P01-003, P01-004, P01-005, P01-006, P01-015, P01-018, P01-019, P01-021, P01-023 | Implementation (Step 1) + Fixes (Step 3) | Full TDD + Hybrid (core business logic) |
+| **`full-stack-orchestration:security-auditor`** | P01-024 | Implementation (Step 1) + Fixes (Step 3) | Security and compliance review |
+| **`tdd-workflows:code-reviewer`** | ALL TASKS | QA Audit (Step 2) + Reaudit (Step 4) | Code review and quality gates validation |
+
+### Workflow Pattern for All Tasks:
+1. **Implementation** - Assigned agent implements per task specs
+2. **QA Audit** - `tdd-workflows:code-reviewer` validates quality gates
+3. **Fixes if needed** - Same implementation agent fixes issues
+4. **Reaudit** - `tdd-workflows:code-reviewer` re-validates
+5. **Loop until Quality Gates Met** - Repeat steps 3-4 until passed
+6. **Commit** - Implementation agent finalizes and commits
 
 ---
 
