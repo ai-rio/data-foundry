@@ -28,7 +28,7 @@ from typing import AsyncGenerator
 from src.workers.config import WorkerConfig
 from src.workers.job_worker import JobWorker
 from src.infrastructure.repositories.job_repository import JobRepository
-from src.infrastructure.database import get_async_session_factory
+from src.database.connection import db_connection
 
 # Configure logging
 logging.basicConfig(
@@ -50,8 +50,7 @@ async def create_job_repository() -> AsyncGenerator[JobRepository, None]:
     Yields:
         Configured JobRepository instance
     """
-    session_factory = get_async_session_factory()
-    async with session_factory() as session:
+    async with db_connection.get_session() as session:
         yield JobRepository(session)
 
 
@@ -60,11 +59,17 @@ async def run_worker() -> None:
     Initialize and run the background job worker.
 
     This function:
-    1. Loads configuration from environment variables
-    2. Creates database session and repository
-    3. Creates and starts the JobWorker
-    4. Handles graceful shutdown on SIGTERM/SIGINT
+    1. Initializes database connection
+    2. Loads configuration from environment variables
+    3. Creates database session and repository
+    4. Creates and starts the JobWorker
+    5. Handles graceful shutdown on SIGTERM/SIGINT
     """
+    # Initialize database
+    logger.info("Initializing database connection...")
+    await db_connection.initialize()
+    logger.info("Database connection initialized")
+
     # Load configuration
     config = WorkerConfig()
     logger.info(f"Starting worker {config.worker_id}")
