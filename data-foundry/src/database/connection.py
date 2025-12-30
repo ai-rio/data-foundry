@@ -146,8 +146,10 @@ class DatabaseConnection:
         logger.debug("New async engine created for current event loop")
 
         # Create async connection pool
+        # Use sync URL format for asyncpg (convert postgresql+asyncpg:// to postgresql://)
+        pool_url = settings.database_url_sync
         self._pool = await asyncpg.create_pool(
-            settings.DATABASE_URL,
+            pool_url,
             min_size=5,
             max_size=20,
             command_timeout=60,

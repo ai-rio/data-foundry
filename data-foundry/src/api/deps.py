@@ -18,11 +18,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from src.core.jwt_verifier import verify_jwt
-from src.database.connection import get_db_session
+from src.database.connection import db_connection
 from src.models.user import User, UserRole
 
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# DATABASE DEPENDENCIES
+# ============================================================================
+
+async def get_db_session() -> AsyncSession:
+    """Get async database session for FastAPI dependency injection."""
+    async with db_connection.get_session() as session:
+        yield session
 
 
 # ============================================================================

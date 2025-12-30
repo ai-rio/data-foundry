@@ -16,6 +16,7 @@ from src.models.processed_data import ProcessedData
 from src.models.human_review_queue import HumanReviewQueue
 from src.models.user import User, UserRole, UserStatus
 from src.models.tenant import Tenant, TenantStatus
+from src.infrastructure.repositories.job_repository import ProcessingJobDB
 
 
 async def create_tables():
