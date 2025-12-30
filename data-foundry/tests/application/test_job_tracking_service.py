@@ -7,6 +7,8 @@ TDD tests for the job tracking application service.
 import pytest
 from datetime import datetime, timedelta
 from decimal import Decimal
+from typing import Any
+from unittest.mock import Mock
 
 from src.application.job_tracking_service import JobTrackingService
 from src.domain.processing_job.aggregate import ProcessingJob, JobStatus
@@ -461,3 +463,263 @@ class TestVersioningAndConcurrency:
 
         job = await service.mark_complete(job.id, result_records=100)
         assert job.version == initial_version + 2
+
+
+class TestAMLJobTracking:
+    """Tests for AML-specific job tracking functionality."""
+
+    @pytest.mark.asyncio
+    async def test_mark_complete_with_aml_risk_counts(self, service):
+        """Should store AML risk level counts in job metadata."""
+        job = await service.create_job("tenant-1", "file.csv", 1024)
+        await service.start_processing(job.id)
+
+        aml_risk_counts = {
+            "LOW": 50,
+            "MEDIUM": 30,
+            "HIGH": 15,
+            "CRITICAL": 5,
+        }
+
+        completed_job = await service.mark_complete(
+            job_id=job.id,
+            result_records=100,
+            aml_risk_level_counts=aml_risk_counts,
+        )
+
+        assert completed_job.metadata["aml_results"]["risk_level_counts"] == aml_risk_counts
+        assert completed_job.status == JobStatus.COMPLETE
+
+    @pytest.mark.asyncio
+    async def test_mark_complete_with_aml_inter_rater_agreement(self, service):
+        """Should store Cohen's Kappa score in job metadata."""
+        job = await service.create_job("tenant-1", "file.csv", 1024)
+        await service.start_processing(job.id)
+
+        completed_job = await service.mark_complete(
+            job_id=job.id,
+            result_records=100,
+            aml_inter_rater_agreement=0.75,
+        )
+
+        assert completed_job.metadata["aml_results"]["inter_rater_agreement"] == 0.75
+
+    @pytest.mark.asyncio
+    async def test_mark_complete_with_aml_expert_review_count(self, service):
+        """Should store expert review count in job metadata."""
+        job = await service.create_job("tenant-1", "file.csv", 1024)
+        await service.start_processing(job.id)
+
+        completed_job = await service.mark_complete(
+            job_id=job.id,
+            result_records=100,
+            aml_expert_review_count=12,
+        )
+
+        assert completed_job.metadata["aml_results"]["expert_review_count"] == 12
+
+    @pytest.mark.asyncio
+    async def test_mark_complete_with_aml_audit_report_url(self, service):
+        """Should store audit report URL in job metadata."""
+        job = await service.create_job("tenant-1", "file.csv", 1024)
+        await service.start_processing(job.id)
+
+        completed_job = await service.mark_complete(
+            job_id=job.id,
+            result_records=100,
+            aml_audit_report_url="/reports/audit_job_123.pdf",
+        )
+
+        assert completed_job.metadata["aml_results"]["audit_report_url"] == "/reports/audit_job_123.pdf"
+
+    @pytest.mark.asyncio
+    async def test_mark_complete_with_all_aml_fields(self, service):
+        """Should store all AML fields together in metadata."""
+        job = await service.create_job("tenant-1", "file.csv", 1024)
+        await service.start_processing(job.id)
+
+        aml_risk_counts = {"LOW": 80, "MEDIUM": 15, "HIGH": 5, "CRITICAL": 0}
+
+        completed_job = await service.mark_complete(
+            job_id=job.id,
+            result_records=100,
+            aml_risk_level_counts=aml_risk_counts,
+            aml_inter_rater_agreement=0.82,
+            aml_expert_review_count=3,
+            aml_audit_report_url="/reports/audit_456.pdf",
+        )
+
+        aml_results = completed_job.metadata["aml_results"]
+        assert aml_results["risk_level_counts"] == aml_risk_counts
+        assert aml_results["inter_rater_agreement"] == 0.82
+        assert aml_results["expert_review_count"] == 3
+        assert aml_results["audit_report_url"] == "/reports/audit_456.pdf"
+
+    @pytest.mark.asyncio
+    async def test_mark_complete_with_zero_inter_rater_agreement(self, service):
+        """
+        CRITICAL BUG FIX TEST: Should store zero (0.0) inter-rater agreement score.
+
+        This test ensures that a valid score of 0.0 is not treated as falsy
+        and is properly stored in metadata. The old bug used `any()` with
+        `is not None` checks which failed for 0.0 values.
+        """
+        job = await service.create_job("tenant-1", "file.csv", 1024)
+        await service.start_processing(job.id)
+
+        completed_job = await service.mark_complete(
+            job_id=job.id,
+            result_records=100,
+            aml_inter_rater_agreement=0.0,  # Valid score indicating no agreement
+        )
+
+        # CRITICAL: 0.0 should be stored, not treated as falsy
+        assert "aml_results" in completed_job.metadata
+        assert completed_job.metadata["aml_results"]["inter_rater_agreement"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_mark_complete_with_zero_expert_review_count(self, service):
+        """Should store zero expert review count."""
+        job = await service.create_job("tenant-1", "file.csv", 1024)
+        await service.start_processing(job.id)
+
+        completed_job = await service.mark_complete(
+            job_id=job.id,
+            result_records=100,
+            aml_expert_review_count=0,  # Explicit zero means no reviews needed
+        )
+
+        # Zero is a valid count and should be stored
+        assert "aml_results" in completed_job.metadata
+        assert completed_job.metadata["aml_results"]["expert_review_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_mark_complete_without_aml_fields(self, service):
+        """Should complete job successfully without AML fields."""
+        job = await service.create_job("tenant-1", "file.csv", 1024)
+        await service.start_processing(job.id)
+
+        completed_job = await service.mark_complete(
+            job_id=job.id,
+            result_records=100,
+        )
+
+        assert completed_job.status == JobStatus.COMPLETE
+        assert "aml_results" not in completed_job.metadata
+
+    @pytest.mark.asyncio
+    async def test_get_aml_job_metrics_from_metadata(self, service, repo):
+        """Should retrieve AML metrics from job metadata."""
+        job = await service.create_job("tenant-1", "file.csv", 1024)
+        await service.start_processing(job.id)
+
+        # Store AML results in metadata
+        aml_risk_counts = {"LOW": 45, "MEDIUM": 30, "HIGH": 20, "CRITICAL": 5}
+        typology_counts = {"ML": 25, "TF": 15, "PEP": 10, "FRAUD": 30, "SANCTIONS": 20}
+
+        await service.mark_complete(
+            job_id=job.id,
+            result_records=100,
+            aml_risk_level_counts=aml_risk_counts,
+            aml_inter_rater_agreement=0.68,
+            aml_expert_review_count=8,
+        )
+
+        # Add typology counts and average confidence to metadata
+        # Need to update the job directly and save to repository
+        job_updated = await service.get_job_or_fail(job.id)
+        job_updated.metadata["aml_results"]["typology_counts"] = typology_counts
+        job_updated.metadata["aml_results"]["average_confidence"] = 0.75
+        # Increment version to satisfy optimistic locking
+        job_updated.version += 1
+        await repo.save(job_updated)
+
+        metrics = await service.get_aml_job_metrics(job.id)
+
+        assert metrics["total_transactions"] == 100
+        assert metrics["risk_distribution"] == aml_risk_counts
+        assert metrics["typology_distribution"] == typology_counts
+        assert metrics["average_confidence"] == 0.75
+        assert metrics["expert_review_count"] == 8
+        assert metrics["inter_rater_agreement"] == 0.68
+
+    @pytest.mark.asyncio
+    async def test_get_aml_job_metrics_from_labels(self, service):
+        """Should calculate AML metrics from provided labels."""
+        from src.models.aml_enums import AMLRiskLevel, AMLExpertReviewStatus
+        from decimal import Decimal
+
+        job = await service.create_job("tenant-1", "file.csv", 1024)
+        await service.start_processing(job.id)
+        await service.mark_complete(job_id=job.id, result_records=5)
+
+        # Create mock AML labels
+        mock_labels = []
+        for i, (risk, typology, confidence) in enumerate([
+            (AMLRiskLevel.LOW, "ML", Decimal("0.65")),
+            (AMLRiskLevel.MEDIUM, "TF", Decimal("0.72")),
+            (AMLRiskLevel.HIGH, "PEP", Decimal("0.58")),
+            (AMLRiskLevel.LOW, "ML", Decimal("0.81")),
+            (AMLRiskLevel.MEDIUM, "TF", Decimal("0.70")),
+        ]):
+            label = Mock()
+            label.risk_level = risk
+            label.typology = typology
+            label.confidence_score = confidence
+            label.expert_review_status = AMLExpertReviewStatus.PENDING if i < 2 else AMLExpertReviewStatus.AGREED
+            mock_labels.append(label)
+
+        metrics = await service.get_aml_job_metrics(job.id, aml_labels=mock_labels)
+
+        assert metrics["total_transactions"] == 5
+        assert metrics["risk_distribution"]["LOW"] == 2
+        assert metrics["risk_distribution"]["MEDIUM"] == 2
+        assert metrics["risk_distribution"]["HIGH"] == 1
+        assert metrics["typology_distribution"]["ML"] == 2
+        assert metrics["typology_distribution"]["TF"] == 2
+        assert metrics["typology_distribution"]["PEP"] == 1
+        assert metrics["expert_review_count"] == 2
+        assert abs(metrics["average_confidence"] - 0.692) < 0.01  # (0.65+0.72+0.58+0.81+0.70)/5
+
+    @pytest.mark.asyncio
+    async def test_get_aml_job_metrics_empty_labels(self, service):
+        """Should handle empty labels list gracefully."""
+        job = await service.create_job("tenant-1", "file.csv", 1024)
+        await service.start_processing(job.id)
+        await service.mark_complete(job_id=job.id, result_records=0)
+
+        metrics = await service.get_aml_job_metrics(job.id, aml_labels=[])
+
+        assert metrics["total_transactions"] == 0
+        assert metrics["risk_distribution"] == {}
+        assert metrics["typology_distribution"] == {}
+        assert metrics["average_confidence"] == 0.0
+        assert metrics["expert_review_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_get_aml_job_metrics_nonexistent_job(self, service):
+        """Should raise JobNotFoundError for non-existent job."""
+        with pytest.raises(JobNotFoundError):
+            await service.get_aml_job_metrics("non-existent-job-id")
+
+    @pytest.mark.asyncio
+    async def test_get_aml_job_metrics_partial_metadata(self, service):
+        """Should handle partial AML metadata gracefully."""
+        job = await service.create_job("tenant-1", "file.csv", 1024)
+        await service.start_processing(job.id)
+
+        # Store only partial AML results
+        await service.mark_complete(
+            job_id=job.id,
+            result_records=50,
+            aml_risk_level_counts={"LOW": 30, "MEDIUM": 20},
+        )
+
+        metrics = await service.get_aml_job_metrics(job.id)
+
+        assert metrics["total_transactions"] == 50
+        assert metrics["risk_distribution"] == {"LOW": 30, "MEDIUM": 20}
+        assert metrics["typology_distribution"] == {}  # Not stored
+        assert metrics["average_confidence"] == 0.0  # Not stored
+        assert metrics["expert_review_count"] == 0  # Not stored
+        assert metrics["inter_rater_agreement"] is None  # Not stored

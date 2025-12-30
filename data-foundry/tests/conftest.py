@@ -186,11 +186,21 @@ async def db_setup() -> AsyncGenerator[None, None]:
         # Already initialized, just need to make sure pool is ready
         pass
 
-    # Create tables and RLS policies
-    from src.database.migrations import create_tables, create_indexes, create_rls_policies
-    await create_tables()
-    await create_indexes()
-    await create_rls_policies()
+    # Create tables using SQLModel metadata
+    from sqlmodel import SQLModel
+    from src.models import (
+        User, Tenant, DataRecord, ProcessedData, HumanReviewQueue,
+        TokenUsage, TenantUsage, AuditLog
+    )
+    from src.models.aml_transaction_label import AMLTransactionLabel
+    from src.models.aml_expert_review import AMLExpertReview
+    from src.models.aml_audit_report import AMLAuditReport
+    from src.models.aml_labeling_methodology import AMLLabelingMethodology
+    from src.models.processing_job import ProcessingJobDB
+    from src.services.stripe_service import StripeCustomer, StripeSubscription, StripeMeterEvent, BillingEvent
+
+    # Create all tables
+    SQLModel.metadata.create_all(db_connection._sync_engine)
 
     yield
 

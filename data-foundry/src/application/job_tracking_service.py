@@ -12,7 +12,7 @@ SOLID Principles:
 import logging
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Optional, List
+from typing import Optional, List, Dict, Any, Protocol, runtime_checkable
 
 from src.domain.processing_job.aggregate import ProcessingJob, JobStatus
 from src.domain.processing_job.repository import IJobRepository
@@ -20,8 +20,27 @@ from src.domain.processing_job.exceptions import (
     JobNotFoundError,
     InvalidStateTransition,
 )
+from src.models.aml_enums import AMLExpertReviewStatus
 
 logger = logging.getLogger(__name__)
+
+
+@runtime_checkable
+class AMLLabelProtocol(Protocol):
+    """
+    Protocol for AML transaction labels to ensure type safety.
+
+    This protocol defines the expected interface for AML label objects,
+    allowing for duck typing while maintaining type checking.
+    """
+    risk_level: str
+    typology: str
+    confidence_score: Optional[float]
+
+    def __init__(self, **kwargs): ...  # type: ignore
+
+    # Optional expert review status
+    expert_review_status: Optional[AMLExpertReviewStatus] = None
 
 
 class JobTrackingService:
@@ -130,6 +149,10 @@ class JobTrackingService:
         result_records: int,
         result_url: Optional[str] = None,
         actual_cost: Optional[Decimal] = None,
+        aml_risk_level_counts: Optional[Dict[str, int]] = None,
+        aml_inter_rater_agreement: Optional[float] = None,
+        aml_expert_review_count: Optional[int] = None,
+        aml_audit_report_url: Optional[str] = None,
     ) -> ProcessingJob:
         """
         Transition a job from PROCESSING to COMPLETE.
@@ -139,6 +162,10 @@ class JobTrackingService:
             result_records: Number of records processed
             result_url: Optional URL to results
             actual_cost: Optional actual processing cost
+            aml_risk_level_counts: Optional dict of AML risk level distributions
+            aml_inter_rater_agreement: Optional Cohen's Kappa score
+            aml_expert_review_count: Optional number routed to expert review
+            aml_audit_report_url: Optional path to generated audit report
 
         Returns:
             Updated ProcessingJob
@@ -154,6 +181,23 @@ class JobTrackingService:
             result_url=result_url,
             actual_cost=actual_cost,
         )
+
+        # Store AML-specific results in metadata
+        # Build aml_results dict only with non-None/empty values to avoid
+        # storing zeros or False values incorrectly
+        aml_results = {}
+        if aml_risk_level_counts:
+            aml_results["risk_level_counts"] = aml_risk_level_counts
+        if aml_inter_rater_agreement is not None:
+            aml_results["inter_rater_agreement"] = aml_inter_rater_agreement
+        if aml_expert_review_count is not None:
+            aml_results["expert_review_count"] = aml_expert_review_count
+        if aml_audit_report_url:
+            aml_results["audit_report_url"] = aml_audit_report_url
+
+        if aml_results:
+            job.metadata["aml_results"] = aml_results
+
         saved_job = await self._repo.save(job)
 
         logger.info(
@@ -383,3 +427,97 @@ class JobTrackingService:
             status=JobStatus.PENDING,
             limit=limit,
         )
+
+    # -----------------------------------------------------------------
+    # AML-specific Operations
+    # -----------------------------------------------------------------
+
+    async def get_aml_job_metrics(
+        self,
+        job_id: str,
+        aml_labels: Optional[List[AMLLabelProtocol]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Retrieve AML-specific metrics for a completed job.
+
+        This method calculates comprehensive AML metrics including:
+        - Total transactions processed
+        - Risk level distribution
+        - Typology distribution
+        - Average confidence score
+        - Expert review count
+        - Inter-rater agreement (if expert reviews exist)
+
+        Args:
+            job_id: Job identifier
+            aml_labels: Optional list of AMLTransactionLabel objects for calculation.
+                       If None, retrieves aml_results from job metadata.
+
+        Returns:
+            Dictionary with:
+                - total_transactions: int
+                - risk_distribution: dict[str, int]
+                - typology_distribution: dict[str, int]
+                - average_confidence: float
+                - expert_review_count: int
+                - inter_rater_agreement: float | None
+
+        Raises:
+            JobNotFoundError: If job doesn't exist
+        """
+        job = await self._repo.get_by_id(job_id)
+
+        # Check if job has AML results stored in metadata
+        aml_results = job.metadata.get("aml_results", {})
+
+        # If AML labels provided, calculate metrics directly
+        if aml_labels:
+            total_transactions = len(aml_labels)
+
+            # Calculate risk distribution
+            risk_distribution: Dict[str, int] = {}
+            for label in aml_labels:
+                risk_level = label.risk_level if hasattr(label.risk_level, 'value') else label.risk_level
+                risk_distribution[risk_level] = risk_distribution.get(risk_level, 0) + 1
+
+            # Calculate typology distribution
+            typology_distribution: Dict[str, int] = {}
+            for label in aml_labels:
+                typology = label.typology
+                typology_distribution[typology] = typology_distribution.get(typology, 0) + 1
+
+            # Calculate average confidence
+            confidences = [
+                float(label.confidence_score)
+                for label in aml_labels
+                if label.confidence_score is not None
+            ]
+            average_confidence = sum(confidences) / len(confidences) if confidences else 0.0
+
+            # Count expert reviews (labels with PENDING status or with reviews)
+            expert_review_count = sum(
+                1 for label in aml_labels
+                if hasattr(label, 'expert_review_status') and
+                label.expert_review_status == AMLExpertReviewStatus.PENDING
+            )
+
+            # Calculate inter-rater agreement if expert reviews exist
+            inter_rater_agreement = aml_results.get("inter_rater_agreement")
+
+        else:
+            # Use stored metrics from metadata
+            total_transactions = job.result_records or 0
+            risk_distribution = aml_results.get("risk_level_counts", {})
+            typology_distribution = aml_results.get("typology_counts", {})
+            average_confidence = aml_results.get("average_confidence", 0.0)
+            expert_review_count = aml_results.get("expert_review_count") or 0
+            inter_rater_agreement = aml_results.get("inter_rater_agreement")
+
+        return {
+            "total_transactions": total_transactions,
+            "risk_distribution": risk_distribution,
+            "typology_distribution": typology_distribution,
+            "average_confidence": average_confidence,
+            "expert_review_count": expert_review_count,
+            "inter_rater_agreement": inter_rater_agreement,
+        }
