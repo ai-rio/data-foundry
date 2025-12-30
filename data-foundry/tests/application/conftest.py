@@ -2,5 +2,4 @@
 
 import pytest
 
-# Prevent loading of root conftest that has import issues
-pytest_plugins = []
+# Note: pytest_plugins moved to top-level conftest to comply with pytest requirements
