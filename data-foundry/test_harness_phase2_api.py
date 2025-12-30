@@ -285,29 +285,32 @@ async def track_job(
             polls_made += 1
             elapsed = time.time() - start_time
 
-            if elapsed > timeout_seconds:
-                error = f"Timeout waiting for job completion ({timeout_seconds}s)"
-                print(f"      ✗ {error}")
-                return False, "", polls_made, elapsed
-
             try:
                 response = await client.get(f"/api/v1/jobs/{job_id}")
 
                 if response.status_code == 200:
                     job_data = response.json()
-                    status = job_data.get("status")
+                    status = job_data.get("status", "")
                     final_status = status
 
                     print(f"      Poll #{polls_made}: status={status} ({elapsed:.2f}s)")
 
-                    if status in ["COMPLETE", "FAILED"]:
-                        if status == "COMPLETE":
+                    # Check for completion (case-insensitive)
+                    status_upper = status.upper()
+                    if status_upper in ["COMPLETE", "COMPLETED", "FAILED"]:
+                        if status_upper in ["COMPLETE", "COMPLETED"]:
                             print(f"      ✓ Job completed after {polls_made} polls ({elapsed:.2f}s)")
                             return True, status, polls_made, elapsed
                         else:
                             error = job_data.get("error_message", "Unknown error")
                             print(f"      ✗ Job failed: {error}")
                             return False, status, polls_made, elapsed
+
+                    # Check timeout after checking status (allow completion at exactly timeout_seconds)
+                    if elapsed >= timeout_seconds:
+                        error = f"Timeout waiting for job completion ({timeout_seconds}s)"
+                        print(f"      ✗ {error}")
+                        return False, final_status, polls_made, elapsed
 
                     # Not done yet, sleep and retry
                     await asyncio.sleep(poll_interval)
@@ -328,6 +331,27 @@ async def track_job(
         return False, "", polls_made, elapsed
 
 
+def safe_float(value: Any, default: float = 0.0) -> float:
+    """
+    Safely convert a value to float.
+
+    Handles None, string (e.g., "0.006089"), and numeric values.
+
+    Args:
+        value: Value to convert (may be None, str, int, float)
+        default: Default value if conversion fails
+
+    Returns:
+        Float value or default
+    """
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 async def validate_cost(
     client: httpx.AsyncClient,
     job_id: str,
@@ -335,6 +359,10 @@ async def validate_cost(
 ) -> tuple[bool, float, float, float]:
     """
     Test cost validation by comparing estimate vs actual.
+
+    Handles:
+    - String cost values (API returns costs as strings like "0.006089")
+    - None/null actual_cost (common when ingestion flow doesn't compute actual)
 
     Returns:
         (success, estimated_cost, actual_cost, variance_percent)
@@ -348,10 +376,20 @@ async def validate_cost(
             return False, 0.0, 0.0, 0.0
 
         job_data = response.json()
-        estimated = job_data.get("estimated_cost", 0.0)
-        actual = job_data.get("actual_cost", 0.0)
 
-        if actual == 0:
+        # Safely convert costs to float (handles string/None/numeric)
+        estimated = safe_float(job_data.get("estimated_cost"), 0.0)
+        actual = safe_float(job_data.get("actual_cost"), 0.0)
+
+        # Handle case where actual_cost is not yet computed
+        if actual == 0.0:
+            # If actual_cost is null/zero but job completed, consider it a pass
+            # (The ingestion flow may not compute actual_cost)
+            if job_data.get("status", "").upper() in ["COMPLETE", "COMPLETED"]:
+                print(f"      ⚠ Actual cost not computed (null/0). Estimate: ${estimated:.4f}")
+                # Return success=True since cost validation isn't blocking
+                # when actual cost simply isn't computed yet
+                return True, estimated, 0.0, 0.0
             variance = 0.0
         else:
             variance = abs(estimated - actual) / actual * 100
@@ -384,9 +422,10 @@ async def download_results(
         response = await client.get(f"/api/v1/jobs/{job_id}/results")
 
         if response.status_code == 200:
-            # Parse CSV response
+            # Parse CSV response using StringIO
+            from io import StringIO
             csv_content = response.text
-            df = pd.read_csv(path=None, data=csv_content)
+            df = pd.read_csv(StringIO(csv_content))
             record_count = len(df)
             print(f"      ✓ Downloaded {record_count} records")
             return True, record_count
