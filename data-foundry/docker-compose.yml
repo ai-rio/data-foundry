@@ -122,6 +122,38 @@ services:
       - prefect_data:/root/.prefect
       - ./src:/app/src
 
+  # Background Job Worker for Processing Uploaded Data
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: data_foundry_worker
+    command: python -m src.workers.main
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://foundry_user:foundry_password@db:5432/data_foundry
+      - REDIS_URL=redis://redis:6379/0
+      - ENVIRONMENT=development
+      - DEBUG=true
+      - SECRET_KEY=dev-secret-key-change-in-production
+      - IP_HASH_SALT=gdpr-compliance-salt-min-32-chars-for-security-required!
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # Worker Configuration
+      - WORKER_POLL_INTERVAL=2
+      - WORKER_MAX_RETRIES=3
+      - WORKER_BACKOFF_BASE=1.0
+      - WORKER_BATCH_SIZE=1
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    volumes:
+      - ./src:/app/src
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   redis_data:
