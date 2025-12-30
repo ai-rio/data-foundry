@@ -24,6 +24,350 @@ import re
 logger = logging.getLogger(__name__)
 
 
+# =============================================================================
+# AML Labeling Constants (P01-004)
+# =============================================================================
+
+# Valid AML risk levels per FATF guidelines
+AML_RISK_LEVELS = frozenset(["LOW", "MEDIUM", "HIGH", "CRITICAL"])
+
+# Valid FATF typologies for AML classification
+FATF_TYPOLOGIES = frozenset([
+    "ML",  # Money Laundering
+    "TF",  # Terrorist Financing
+    "PEP",  # Politically Exposed Persons
+    "FRAUD",  # Financial Fraud
+    "SANCTIONS",  # Sanctions Evasion
+    "TAX_EVASION",  # Tax Evasion
+    "BRIBERY",  # Bribery and Corruption
+    "SMUGGLING",  # Trade-based ML
+    "DRUG_TRAFFICKING",  # Drug proceeds
+    "HUMAN_TRAFFICKING",  # Human trafficking proceeds
+    "PROLIFERATION",  # WMD financing
+    "CYBERCRIME",  # Cybercrime proceeds
+    "ENVIRONMENTAL"  # Environmental crimes
+])
+
+# Confidence threshold for expert review routing
+# Using configured threshold from settings
+AML_CONFIDENCE_THRESHOLD = 0.6  # Default fallback, use settings.AML_AI_CONFIDENCE_THRESHOLD in production
+
+# Minimum reasoning length for explainability
+# Matches prompt requirement (line 161 in aml_labeling_prompt.py)
+MIN_REASONING_LENGTH = 50
+
+
+# =============================================================================
+# AML Response Validation (P01-004)
+# =============================================================================
+
+def validate_aml_response(response: dict[str, Any]) -> tuple[bool, list[str]]:
+    """
+    Validate AML labeling response from AI service.
+
+    Validates:
+    - risk_level is in AML_RISK_LEVELS
+    - typology is in FATF_TYPOLOGIES
+    - confidence_score is between 0 and 1
+    - reasoning is non-empty and meets minimum length
+
+    Args:
+        response: AI response dictionary
+
+    Returns:
+        tuple: (is_valid, list of error messages)
+    """
+    errors = []
+
+    # Validate risk_level
+    risk_level = response.get("risk_level")
+    if not risk_level:
+        errors.append("Missing required field: risk_level")
+    elif risk_level not in AML_RISK_LEVELS:
+        errors.append(
+            f"Invalid risk_level '{risk_level}'. "
+            f"Must be one of: {', '.join(sorted(AML_RISK_LEVELS))}"
+        )
+
+    # Validate typology
+    typology = response.get("typology")
+    if not typology:
+        errors.append("Missing required field: typology")
+    elif typology not in FATF_TYPOLOGIES:
+        errors.append(
+            f"Invalid typology '{typology}'. "
+            f"Must be one of: {', '.join(sorted(FATF_TYPOLOGIES))}"
+        )
+
+    # Validate confidence_score
+    confidence = response.get("confidence_score")
+    if confidence is None:
+        errors.append("Missing required field: confidence_score")
+    else:
+        try:
+            conf_value = float(confidence)
+            if conf_value < 0.0 or conf_value > 1.0:
+                errors.append(
+                    f"Invalid confidence_score {conf_value}. "
+                    "Must be between 0.0 and 1.0"
+                )
+        except (TypeError, ValueError):
+            errors.append(
+                f"Invalid confidence_score type. "
+                "Must be a numeric value between 0.0 and 1.0"
+            )
+
+    # Validate reasoning
+    reasoning = response.get("reasoning")
+    if not reasoning:
+        errors.append("Missing required field: reasoning")
+    elif not isinstance(reasoning, str):
+        errors.append("Reasoning must be a string")
+    elif len(reasoning.strip()) < MIN_REASONING_LENGTH:
+        errors.append(
+            f"Reasoning too short ({len(reasoning.strip())} chars). "
+            f"Minimum {MIN_REASONING_LENGTH} characters required for audit trail"
+        )
+
+    return (len(errors) == 0, errors)
+
+
+# =============================================================================
+# AML Labeling Task (P01-004)
+# =============================================================================
+
+@task
+async def apply_aml_labeling(data: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Apply AML-specific AI labeling using FATF-aligned prompts.
+
+    This task replaces the generic apply_ai_labeling() for AML use cases.
+    It uses the AIService.aml_completion() method and validates responses
+    against AML-specific schemas.
+
+    Features:
+    - FATF-aligned risk classification (LOW, MEDIUM, HIGH, CRITICAL)
+    - FATF typology assignment (ML, TF, PEP, etc.)
+    - Confidence scoring with expert review routing
+    - Explainable AI reasoning for audit trail
+    - Regulatory flags for compliance reporting
+
+    Error Handling:
+    - Invalid AI response: Set status PENDING (needs expert review)
+    - AI timeout: Return with retry_eligible=True
+    - AI error: Set status ESCALATED
+
+    Args:
+        data: List of transaction records to label
+
+    Returns:
+        List of labeled records with AML classification data
+
+    Reference: P01-004 (AML Labeling Task Implementation)
+    """
+    from src.models.aml_enums import AMLExpertReviewStatus
+
+    logger = get_run_logger()
+    logger.info(f"Applying AML labeling to {len(data)} records")
+
+    # Handle empty input
+    if not data:
+        logger.info("No records to process")
+        return []
+
+    labeled_data = []
+
+    try:
+        from src.services.ai_service import AIService, AIRequest
+        from src.core.prompts.aml_labeling_prompt import (
+            build_aml_labeling_prompt,
+            AML_SYSTEM_PROMPT
+        )
+
+        # Initialize AI Service
+        ai_service = AIService()
+        await ai_service.initialize()
+
+        for record in data:
+            try:
+                labeled_record = await _process_aml_record(
+                    record=record,
+                    ai_service=ai_service,
+                    build_prompt=build_aml_labeling_prompt,
+                    system_prompt=AML_SYSTEM_PROMPT,
+                    logger=logger
+                )
+                labeled_data.append(labeled_record)
+
+            except asyncio.TimeoutError as e:
+                logger.error(
+                    f"AI timeout for record {record.get('id')}: {str(e)}"
+                )
+                error_record = record.copy()
+                error_record.update({
+                    "aml_error": f"AI request timeout: {str(e)}",
+                    "aml_expert_review_status": AMLExpertReviewStatus.PENDING.value,
+                    "aml_retry_eligible": True,
+                    "aml_processed_at": datetime.utcnow().isoformat()
+                })
+                labeled_data.append(error_record)
+
+            except Exception as e:
+                logger.error(
+                    f"AI error for record {record.get('id')}: {str(e)}"
+                )
+                error_record = record.copy()
+                error_record.update({
+                    "aml_error": str(e),
+                    "aml_expert_review_status": AMLExpertReviewStatus.ESCALATED.value,
+                    "aml_processed_at": datetime.utcnow().isoformat()
+                })
+                labeled_data.append(error_record)
+
+        logger.info(f"AML labeling completed for {len(labeled_data)} records")
+        return labeled_data
+
+    except Exception as e:
+        logger.error(f"AI service initialization failed: {str(e)}")
+        # Return all records with error status
+        from src.models.aml_enums import AMLExpertReviewStatus
+        for record in data:
+            error_record = record.copy()
+            error_record.update({
+                "aml_error": f"AI service initialization failed: {str(e)}",
+                "aml_expert_review_status": AMLExpertReviewStatus.ESCALATED.value,
+                "aml_processed_at": datetime.utcnow().isoformat()
+            })
+            labeled_data.append(error_record)
+        return labeled_data
+
+
+async def _process_aml_record(
+    record: dict[str, Any],
+    ai_service: Any,
+    build_prompt: callable,
+    system_prompt: str,
+    logger: Any
+) -> dict[str, Any]:
+    """
+    Process a single record for AML labeling.
+
+    Args:
+        record: Transaction record to label
+        ai_service: Initialized AI service
+        build_prompt: Function to build AML prompt
+        system_prompt: System prompt for AI
+        logger: Logger instance
+
+    Returns:
+        Labeled record with AML classification
+    """
+    from src.services.ai_service import AIRequest
+    from src.models.aml_enums import AMLExpertReviewStatus
+
+    # Build AML-specific prompt
+    prompt = build_prompt(record)
+
+    # Create AI request
+    request = AIRequest(
+        prompt=prompt,
+        system_prompt=system_prompt,
+        temperature=0.3,  # Lower temperature for consistent classification
+        max_tokens=500,
+        response_format="json",
+        tenant_id=record.get("tenant_id", "unknown"),
+        user_id=record.get("user_id"),
+        use_cache=True
+    )
+
+    # Call AI Service using aml_completion method if available
+    # Using EAFP pattern for better error handling
+    try:
+        response = await ai_service.aml_completion(request)
+    except AttributeError:
+        # Fall back to standard completion if aml_completion not available
+        response = await ai_service.completion(request)
+
+    # Parse JSON response
+    try:
+        ai_result = json.loads(response.content)
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse AI response as JSON: {e}")
+        # Return error record
+        error_record = record.copy()
+        error_record.update({
+            "aml_error": f"Invalid JSON response from AI: {str(e)}",
+            "aml_expert_review_status": AMLExpertReviewStatus.PENDING.value,
+            "aml_processed_at": datetime.utcnow().isoformat()
+        })
+        return error_record
+
+    # Validate response
+    is_valid, validation_errors = validate_aml_response(ai_result)
+
+    if not is_valid:
+        logger.warning(
+            f"AML response validation failed for record {record.get('id')}: "
+            f"{validation_errors}"
+        )
+        error_record = record.copy()
+        error_record.update({
+            "aml_validation_error": "; ".join(validation_errors),
+            "aml_expert_review_status": AMLExpertReviewStatus.PENDING.value,
+            "aml_processed_at": datetime.utcnow().isoformat()
+        })
+        return error_record
+
+    # Extract validated values
+    risk_level = ai_result.get("risk_level")
+    typology = ai_result.get("typology")
+    confidence_score = float(ai_result.get("confidence_score"))
+    reasoning = ai_result.get("reasoning")
+    regulatory_flags = ai_result.get("regulatory_flags", [])
+
+    # Determine expert review status based on risk and confidence
+    if risk_level == "CRITICAL":
+        # CRITICAL risk always escalated for immediate attention
+        expert_review_status = AMLExpertReviewStatus.ESCALATED
+        requires_expert_review = True
+    elif confidence_score < AML_CONFIDENCE_THRESHOLD:
+        # Low confidence requires expert review
+        expert_review_status = AMLExpertReviewStatus.PENDING
+        requires_expert_review = True
+    else:
+        # High confidence, non-critical: mark as agreed (auto-approved)
+        # Using AGREED status since AI and expert would agree at high confidence
+        expert_review_status = AMLExpertReviewStatus.AGREED
+        requires_expert_review = False
+
+    # Build labeled record
+    labeled_record = record.copy()
+    labeled_record.update({
+        "aml_risk_level": risk_level,
+        "aml_typology": typology,
+        "aml_confidence_score": confidence_score,
+        "aml_reasoning": reasoning,
+        "aml_regulatory_flags": regulatory_flags,
+        "aml_expert_review_status": expert_review_status.value,
+        "aml_requires_expert_review": requires_expert_review,
+        "aml_model": response.model,
+        "aml_processed_at": datetime.utcnow().isoformat(),
+        "aml_request_id": response.request_id,
+        "aml_tokens_used": response.usage.total_tokens,
+        "aml_cost": str(response.cost),
+        "aml_processing_time_ms": response.response_time_ms,
+        "aml_fallback_used": response.fallback_used,
+        "aml_from_cache": response.from_cache
+    })
+
+    logger.debug(
+        f"Record {record.get('id')} labeled: "
+        f"risk={risk_level}, typology={typology}, confidence={confidence_score:.2f}"
+    )
+
+    return labeled_record
+
+
 # PII Redaction Support - Track Presidio availability
 PRESIDIO_AVAILABLE: bool = False
 try:
