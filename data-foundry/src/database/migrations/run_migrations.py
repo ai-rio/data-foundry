@@ -14,9 +14,13 @@ from src.database.connection import db_connection
 from src.core.config import settings
 
 # Import all migration modules
+import importlib
 from . import add_ai_tracking_fields
 from . import create_usage_tracking_tables
 from . import enhance_tenant_user_models
+
+# Import migration 004 (filename starts with number, so use importlib)
+migration_004 = importlib.import_module('.004_add_unique_constraint_aml_labels', package='src.database.migrations')
 
 
 class Migration:
@@ -61,6 +65,11 @@ MIGRATIONS: List[Migration] = [
         "create_usage_tracking_tables",
         create_usage_tracking_tables,
         "Create usage tracking and billing tables"
+    ),
+    Migration(
+        "add_unique_constraint_aml_labels",
+        migration_004,
+        "Add unique constraint on (transaction_id, tenant_id) to aml_transaction_labels"
     ),
 ]
 
