@@ -25,6 +25,7 @@ from src.api.v1.admin.router import router as admin_router  # Week 4 Phase 2.5 -
 from src.api.v1.billing.router import router as billing_router  # Stripe Billing API (P1-003)
 from src.core.config import settings
 from src.core.security import get_current_user_token
+from src.database.connection import db_connection
 from src.tasks.ingestion import data_ingestion_flow
 
 
@@ -36,6 +37,11 @@ async def lifespan(app: FastAPI):
     print("📊 API Documentation: http://localhost:8000/docs")
     print("🏷️  Label Studio: http://localhost:8080")
     print("🔧 Prefect Dashboard: http://localhost:4200")
+
+    # Initialize database (create tables)
+    print("📁 Initializing database...")
+    await db_connection.initialize()
+    print("✅ Database initialized")
 
     yield
 
