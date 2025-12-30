@@ -523,117 +523,116 @@ async def compute_inter_rater_agreement(
 
 
 # =============================================================================
-# AML Audit Report Generation Task (P01-006)
+# AML Audit Report Generation Task (P01-015)
 # =============================================================================
 
 @task
 async def generate_audit_report(
+    job_id: str,
+    tenant_id: str,
     labeled_data: list[dict[str, Any]],
-    kappa_score: float | None = None,
-    expert_review_queue_size: int = 0
+    kappa_score: float | None = None
 ) -> dict[str, Any]:
     """
-    Generate AML audit report for regulatory compliance.
+    Generate comprehensive AML audit report for regulatory compliance.
 
-    P01-006 Requirement #4:
-    This task generates a basic JSON audit report with key metrics.
-    Full implementation will be in P01-015 (GROUP 6).
+    P01-015 Implementation:
+    This task uses AuditReportGenerator to create complete JSON audit reports
+    with all required sections for regulatory defensibility.
 
-    Current Implementation (Placeholder):
-    - Total transactions processed
-    - AML risk distribution (counts per risk level)
-    - Inter-rater agreement score (Cohen's Kappa)
+    Features:
+    - Complete report structure (report_id, timestamps, metadata)
+    - AML risk distribution (LOW, MEDIUM, HIGH, CRITICAL counts)
+    - FATF typology distribution
+    - Inter-rater agreement metrics (Cohen's Kappa + confidence level)
     - Expert review queue size
-    - Report generation timestamp
+    - Regulatory references (FATF, FinCEN, EU AML Directive)
+    - Audit trail metadata (methodology version, compliance status)
 
     Args:
+        job_id: Processing job identifier that generated the labeled data
+        tenant_id: Tenant identifier for multi-tenancy isolation
         labeled_data: List of AML-labeled transaction records
-        kappa_score: Cohen's Kappa coefficient from inter-rater agreement
-        expert_review_queue_size: Number of records awaiting expert review
+        kappa_score: Optional Cohen's Kappa coefficient from inter-rater agreement
 
     Returns:
-        Dictionary with:
+        Dictionary with complete audit report including:
+        - report_id: Unique report identifier (UUID-based with timestamp)
+        - report_generated_at: ISO timestamp of report generation
+        - job_id: Processing job identifier
+        - tenant_id: Tenant identifier
         - total_transactions: Total number of processed transactions
         - aml_risk_distribution: Count of transactions per risk level
-        - inter_rater_agreement: Kappa score and interpretation
-        - expert_review_queue_size: Number of records in review queue
-        - report_generated_at: ISO timestamp of report generation
-        - report_id: Unique report identifier
+        - typology_distribution: Count per FATF typology
+        - inter_rater_agreement: Kappa score and confidence level
+        - expert_review_queue_size: Number of records pending expert review
+        - regulatory_references: List of applicable regulatory citations
+        - audit_trail: Methodology version and compliance status
 
     Example:
         >>> report = await generate_audit_report(
+        ...     job_id="job_abc123",
+        ...     tenant_id="tenant_001",
         ...     labeled_data=labeled_transactions,
-        ...     kappa_score=0.85,
-        ...     expert_review_queue_size=10
+        ...     kappa_score=0.85
         ... )
         >>> print(report["total_transactions"])  # 150
         >>> print(report["aml_risk_distribution"])  # {"LOW": 80, "MEDIUM": 40, ...}
+        >>> print(report["inter_rater_agreement"]["confidence_level"])  # "PERFECT"
+
+    Reference: P01-015 (Audit Report Generation)
     """
     logger = get_run_logger()
-    logger.info("Generating AML audit report")
+    logger.info(
+        f"Generating AML audit report for job {job_id}: "
+        f"{len(labeled_data)} transactions"
+    )
 
     try:
-        # Calculate AML risk distribution
-        risk_distribution = {
-            "LOW": 0,
-            "MEDIUM": 0,
-            "HIGH": 0,
-            "CRITICAL": 0
-        }
+        from src.services.audit_report_generator import AuditReportGenerator
 
-        for record in labeled_data:
-            risk_level = record.get("aml_risk_level", "UNKNOWN")
-            if risk_level in risk_distribution:
-                risk_distribution[risk_level] += 1
+        # Initialize generator
+        generator = AuditReportGenerator()
 
-        # Build inter-rater agreement section
-        inter_rater_agreement = {
-            "kappa": kappa_score,
-            "available": kappa_score is not None,
-        }
-
-        if kappa_score is not None:
-            from src.core.agreement_calculator import CohenKappaCalculator
-            calculator = CohenKappaCalculator()
-            inter_rater_agreement["confidence_level"] = calculator.get_confidence_level(kappa_score)
-            inter_rater_agreement["is_sufficient"] = calculator.is_agreement_sufficient(kappa_score)
-            inter_rater_agreement["threshold"] = calculator.threshold
-        else:
-            inter_rater_agreement["confidence_level"] = "UNAVAILABLE"
-            inter_rater_agreement["is_sufficient"] = False
-            inter_rater_agreement["threshold"] = settings.AML_KAPPA_THRESHOLD
-
-        # Generate report ID
-        report_id = f"aml_report_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
-
-        report = {
-            "report_id": report_id,
-            "total_transactions": len(labeled_data),
-            "aml_risk_distribution": risk_distribution,
-            "inter_rater_agreement": inter_rater_agreement,
-            "expert_review_queue_size": expert_review_queue_size,
-            "report_generated_at": datetime.utcnow().isoformat(),
-            "report_type": "AML_AUDIT_PLACEHOLDER",
-            "note": "Full implementation in P01-015 (GROUP 6)"
-        }
+        # Generate complete report
+        report = generator.generate_report(
+            job_data={"job_id": job_id, "tenant_id": tenant_id},
+            labels=labeled_data,
+            kappa_score=kappa_score
+        )
 
         logger.info(
-            f"Audit report generated: {report['total_transactions']} transactions, "
-            f"risk distribution: {risk_distribution}"
+            f"Successfully generated audit report {report['report_id']}: "
+            f"{report['total_transactions']} transactions, "
+            f"kappa={kappa_score}, "
+            f"risk_dist={report['aml_risk_distribution']}"
         )
 
         return report
 
     except Exception as e:
         logger.error(f"Failed to generate audit report: {str(e)}")
-        # Return minimal report with error info
+        # Return minimal report with error info for resilience
         return {
             "report_id": f"aml_report_error_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}",
+            "report_generated_at": datetime.utcnow().isoformat(),
+            "job_id": job_id,
+            "tenant_id": tenant_id,
             "total_transactions": len(labeled_data),
             "aml_risk_distribution": {},
-            "inter_rater_agreement": {"kappa": None, "error": str(e)},
-            "expert_review_queue_size": expert_review_queue_size,
-            "report_generated_at": datetime.utcnow().isoformat(),
+            "typology_distribution": {},
+            "inter_rater_agreement": {
+                "kappa_score": None,
+                "confidence_level": "ERROR",
+                "available": False
+            },
+            "expert_review_queue_size": 0,
+            "regulatory_references": [],
+            "audit_trail": {
+                "methodology_version": "v1.0",
+                "generated_by": "system",
+                "compliance_status": "error"
+            },
             "error": str(e)
         }
 

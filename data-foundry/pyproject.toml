@@ -18,7 +18,7 @@ dependencies = [
     # Core API Framework
     "fastapi>=0.104.0",
     "uvicorn[standard]>=0.24.0",
-    "slowapi>=0.1.9",  # CRITICAL #2 - Rate limiting (Week 4 Phase 2.1)
+    "slowapi>=0.1.9", # CRITICAL #2 - Rate limiting (Week 4 Phase 2.1)
     # Database & Models
     "sqlmodel>=0.0.27",
     "sqlalchemy>=2.0.45",
@@ -40,9 +40,9 @@ dependencies = [
     "anthropic>=0.8.0",
     "litellm>=1.0.0",
     # ML Dependencies (Week 3 - Signal Detection)
-    "scikit-learn>=1.5.0",  # Random Forest, TF-IDF vectorization
-    "joblib>=1.4.0",        # Model serialization/deserialization
-    "numpy>=1.26.0",        # Feature arrays and numerical operations
+    "scikit-learn>=1.5.0", # Random Forest, TF-IDF vectorization
+    "joblib>=1.4.0", # Model serialization/deserialization
+    "numpy>=1.26.0", # Feature arrays and numerical operations
     # Privacy & Security
     "presidio-analyzer>=2.2.360",
     "presidio-anonymizer>=2.2.360",
@@ -51,7 +51,7 @@ dependencies = [
     "spacy-legacy>=3.0.12",
     "spacy-loggers>=1.0.5",
     # Business & Billing
-    "stripe>=10.0.0",  # Stripe Python SDK v10+ with v2 billing API support
+    "stripe>=10.0.0", # Stripe Python SDK v10+ with v2 billing API support
     # HTTP & Async
     "httpx>=0.25.0",
     "aiofiles>=23.2.0",
@@ -66,6 +66,7 @@ dependencies = [
     "structlog>=25.5.0",
     "hvac>=2.4.0",
     "cryptography>=44.0.3",
+    "fpdf>=1.7.2",
 ]
 
 [project.optional-dependencies]

@@ -23,6 +23,7 @@ from src.api.v1.signals.router import router as signals_router  # Week 4 Phase 2
 from src.api.v1.ml.router import router as ml_router  # Week 4 Phase 2.4 - ML Predictor API
 from src.api.v1.admin.router import router as admin_router  # Week 4 Phase 2.5 - Admin/Monitoring API
 from src.api.v1.billing.router import router as billing_router  # Stripe Billing API (P1-003)
+from src.api.v1.regulatory.router import router as regulatory_router  # P01-016 - Regulatory Reference API
 from src.core.config import settings
 from src.core.security import get_current_user_token
 from src.database.connection import db_connection
@@ -81,6 +82,7 @@ app.include_router(signals_router, prefix="/api/v1")  # Week 4 Phase 2.3 - Signa
 app.include_router(ml_router, prefix="/api/v1")  # Week 4 Phase 2.4 - ML Predictor API
 app.include_router(admin_router, prefix="/api/v1")  # Week 4 Phase 2.5 - Admin/Monitoring API
 app.include_router(billing_router, prefix="/api/v1")  # Stripe Billing API (P1-003)
+app.include_router(regulatory_router, prefix="/api/v1")  # P01-016 - Regulatory Reference API
 
 
 
