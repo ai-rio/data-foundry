@@ -249,6 +249,85 @@ class Settings(BaseSettings):
     PROMPT_TRUNCATE_ENABLED: bool = False  # Whether to truncate long prompts
     PROMPT_COST_TRACKING: bool = True
 
+    # ==========================================================================
+    # AML (Anti-Money Laundering) Service Configuration
+    # ==========================================================================
+    # Core AML Service Settings
+    ENABLE_AML_SERVICE: bool = Field(
+        default=True,
+        description="Enable or disable the AML service functionality"
+    )
+    AML_AI_CONFIDENCE_THRESHOLD: float = Field(
+        default=0.6,
+        ge=0.0,
+        le=1.0,
+        description="AI confidence threshold for AML classifications (0.0-1.0)"
+    )
+    AML_RISK_LEVELS: list[str] = Field(
+        default=["LOW", "MEDIUM", "HIGH", "CRITICAL"],
+        description="Available risk levels for AML classification"
+    )
+    AML_DEFAULT_RISK_LEVEL: str = Field(
+        default="MEDIUM",
+        description="Default risk level when classification is uncertain"
+    )
+
+    # Kappa Agreement Configuration (Inter-rater Reliability)
+    AML_KAPPA_THRESHOLD: float = Field(
+        default=0.70,
+        ge=0.0,
+        le=1.0,
+        description="Cohen's Kappa threshold for acceptable inter-rater agreement"
+    )
+    AML_KAPPA_INTERPRETATION: dict[str, tuple[float, float]] = Field(
+        default={
+            "POOR": (0.0, 0.20),
+            "FAIR": (0.20, 0.40),
+            "MODERATE": (0.40, 0.60),
+            "SUBSTANTIAL": (0.60, 0.80),
+            "PERFECT": (0.80, 1.0)
+        },
+        description="Kappa score interpretation ranges (label: (min, max))"
+    )
+
+    # Expert Review Configuration
+    AML_EXPERT_REQUIRED_REVIEWS: int = Field(
+        default=2,
+        gt=0,
+        description="Number of expert reviews required for AML decisions"
+    )
+    AML_EXPERT_AGREEMENT_REQUIRED: bool = Field(
+        default=True,
+        description="Whether expert agreement is required for final classification"
+    )
+
+    # Audit and Compliance Settings
+    AML_AUDIT_REPORT_ENABLED: bool = Field(
+        default=True,
+        description="Enable audit report generation for AML activities"
+    )
+    AML_REGULATORY_FLAGS_ENABLED: bool = Field(
+        default=True,
+        description="Enable regulatory flag tracking and alerts"
+    )
+
+    # Performance and Processing Settings
+    AML_BATCH_INSERT_SIZE: int = Field(
+        default=1000,
+        gt=0,
+        description="Batch size for bulk AML data insertions"
+    )
+    AML_LABELING_TIMEOUT_SECONDS: int = Field(
+        default=30,
+        gt=0,
+        description="Timeout in seconds for AML labeling operations"
+    )
+    AML_REVIEW_QUEUE_MAX_SIZE: int = Field(
+        default=10000,
+        gt=0,
+        description="Maximum size of the AML review queue"
+    )
+
     @field_validator("SECRET_KEY")
     @classmethod
     def validate_secret_key(cls, v: str | None, info) -> str:
@@ -273,6 +352,39 @@ class Settings(BaseSettings):
             raise ValueError(
                 "DATABASE_URL must be set via environment variable in production"
             )
+        return v
+
+    @field_validator("AML_DEFAULT_RISK_LEVEL")
+    @classmethod
+    def validate_aml_default_risk_level(cls, v: str, info) -> str:
+        """Validate AML_DEFAULT_RISK_LEVEL is a valid risk level."""
+        risk_levels = info.data.get("AML_RISK_LEVELS", ["LOW", "MEDIUM", "HIGH", "CRITICAL"])
+        if v not in risk_levels:
+            raise ValueError(
+                f"AML_DEFAULT_RISK_LEVEL must be one of {risk_levels}, got '{v}'"
+            )
+        return v
+
+    @field_validator("AML_KAPPA_INTERPRETATION")
+    @classmethod
+    def validate_aml_kappa_interpretation(cls, v: dict) -> dict:
+        """Validate AML_KAPPA_INTERPRETATION has required keys and valid ranges."""
+        required_keys = {"POOR", "FAIR", "MODERATE", "SUBSTANTIAL", "PERFECT"}
+        if not required_keys.issubset(v.keys()):
+            missing = required_keys - set(v.keys())
+            raise ValueError(
+                f"AML_KAPPA_INTERPRETATION missing required keys: {missing}"
+            )
+        # Validate each range
+        for key, (min_val, max_val) in v.items():
+            if not (0.0 <= min_val <= 1.0 and 0.0 <= max_val <= 1.0):
+                raise ValueError(
+                    f"AML_KAPPA_INTERPRETATION[{key}] values must be between 0.0 and 1.0"
+                )
+            if min_val > max_val:
+                raise ValueError(
+                    f"AML_KAPPA_INTERPRETATION[{key}] min ({min_val}) > max ({max_val})"
+                )
         return v
 
     model_config = ConfigDict(
@@ -396,4 +508,21 @@ REDIS_CACHE_CONFIG = {
     "connection_timeout": settings.REDIS_CONNECTION_TIMEOUT,
     "socket_timeout": settings.REDIS_SOCKET_TIMEOUT,
     "socket_connect_timeout": settings.REDIS_SOCKET_CONNECT_TIMEOUT,
+}
+
+# AML (Anti-Money Laundering) Service Configuration
+AML_CONFIG = {
+    "enabled": settings.ENABLE_AML_SERVICE,
+    "ai_confidence_threshold": settings.AML_AI_CONFIDENCE_THRESHOLD,
+    "risk_levels": settings.AML_RISK_LEVELS,
+    "default_risk_level": settings.AML_DEFAULT_RISK_LEVEL,
+    "kappa_threshold": settings.AML_KAPPA_THRESHOLD,
+    "kappa_interpretation": settings.AML_KAPPA_INTERPRETATION,
+    "expert_required_reviews": settings.AML_EXPERT_REQUIRED_REVIEWS,
+    "expert_agreement_required": settings.AML_EXPERT_AGREEMENT_REQUIRED,
+    "audit_report_enabled": settings.AML_AUDIT_REPORT_ENABLED,
+    "regulatory_flags_enabled": settings.AML_REGULATORY_FLAGS_ENABLED,
+    "batch_insert_size": settings.AML_BATCH_INSERT_SIZE,
+    "labeling_timeout_seconds": settings.AML_LABELING_TIMEOUT_SECONDS,
+    "review_queue_max_size": settings.AML_REVIEW_QUEUE_MAX_SIZE,
 }
