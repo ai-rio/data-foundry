@@ -4,11 +4,17 @@ Jobs API Router
 FastAPI router for job tracking and management.
 """
 
+import csv
+import io
 import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.api.deps import get_db_session
 from src.api.v1.jobs.contracts import (
     JobStatusContract,
     JobListContract,
@@ -21,6 +27,7 @@ from src.domain.processing_job.exceptions import (
     JobNotFoundError,
     InvalidStateTransition,
 )
+from src.models.processed_data import ProcessedData
 
 logger = logging.getLogger(__name__)
 
@@ -31,14 +38,18 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 # Dependency Injection
 # -----------------------------------------------------------------
 
-async def get_job_service() -> JobTrackingService:
+async def get_job_service(
+    session: AsyncSession = Depends(get_db_session),
+) -> JobTrackingService:
     """
-    Dependency: Get configured JobTrackingService.
-    """
-    from src.infrastructure.repositories.job_repository import get_shared_in_memory_repository
+    Dependency: Get configured JobTrackingService with PostgreSQL persistence.
 
-    # For development, use shared in-memory repository singleton
-    job_repo = get_shared_in_memory_repository()
+    Uses the database session for actual job retrieval, not in-memory storage.
+    """
+    from src.infrastructure.repositories.job_repository import JobRepository
+
+    # Use database-backed repository
+    job_repo = JobRepository(session)
 
     return JobTrackingService(repo=job_repo)
 
@@ -320,6 +331,109 @@ async def get_download_url(
             "download_url": job.result_url,
             "expires_in_seconds": 3600,
         }
+
+    except JobNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job not found: {job_id}",
+        )
+
+
+@router.get(
+    "/{job_id}/results",
+    summary="Download job results as CSV",
+    response_class=StreamingResponse,
+)
+async def download_results(
+    job_id: str,
+    service: JobTrackingService = Depends(get_job_service),
+    tenant_id: str = Depends(get_current_tenant),
+    session: AsyncSession = Depends(get_db_session),
+) -> StreamingResponse:
+    """
+    Download job results as CSV.
+
+    Returns processed data records for the completed job as a downloadable CSV file.
+    Only available for completed jobs with result records.
+
+    Phase 2 Test Harness Support:
+    - Returns CSV with record_id, tenant_id, confidence_score, ai_category, cleaned_data
+    - Includes tenant isolation check
+    - Validates job is complete before returning results
+    """
+    try:
+        # Get job and verify access
+        job = await service.get_job_or_fail(job_id)
+
+        if job.tenant_id != tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied to this job",
+            )
+
+        if job.status != JobStatus.COMPLETE:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Job is not complete (status: {job.status.value})",
+            )
+
+        # Query processed data for this job
+        # ProcessedData has processing_job_id field that links to job
+        query = select(ProcessedData).where(
+            ProcessedData.processing_job_id == job_id,
+            ProcessedData.tenant_id == tenant_id,
+        )
+        result = await session.execute(query)
+        records = result.scalars().all()
+
+        # If no records found, check if job has result_records count
+        # and return empty CSV with headers for test compatibility
+        if not records:
+            logger.info(
+                f"No processed_data records found for job {job_id}. "
+                f"Job result_records: {job.result_records}"
+            )
+
+        # Generate CSV
+        output = io.StringIO()
+        fieldnames = [
+            "record_id",
+            "tenant_id",
+            "confidence_score",
+            "auto_approved",
+            "ai_category",
+            "ai_confidence",
+            "data_quality_score",
+            "cleaned_data",
+            "processed_at",
+        ]
+        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        writer.writeheader()
+
+        for record in records:
+            writer.writerow({
+                "record_id": record.record_id,
+                "tenant_id": record.tenant_id,
+                "confidence_score": record.confidence_score,
+                "auto_approved": record.auto_approved,
+                "ai_category": record.ai_category,
+                "ai_confidence": record.ai_confidence,
+                "data_quality_score": record.data_quality_score,
+                "cleaned_data": record.cleaned_data,
+                "processed_at": record.processed_at.isoformat() if record.processed_at else "",
+            })
+
+        # Prepare streaming response
+        output.seek(0)
+        filename = f"job_{job_id}_results.csv"
+
+        return StreamingResponse(
+            iter([output.getvalue()]),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+            },
+        )
 
     except JobNotFoundError:
         raise HTTPException(
