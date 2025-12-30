@@ -227,7 +227,9 @@ class TestProcessAMLRecordValidResponse:
         assert result["aml_typology"] == "ML"
         assert result["aml_confidence_score"] == 0.85
         assert "layering" in result["aml_reasoning"].lower()
-        assert result["aml_expert_review_status"] == AMLExpertReviewStatus.PENDING.value
+        # High confidence (>=0.6) results in AGREED status (auto-approved)
+        assert result["aml_expert_review_status"] == AMLExpertReviewStatus.AGREED.value
+        assert result["aml_requires_expert_review"] == False
 
     @pytest.mark.asyncio
     async def test_high_confidence_auto_approved(
@@ -240,7 +242,7 @@ class TestProcessAMLRecordValidResponse:
 
         Given: A transaction with high confidence AI response (>=0.6)
         When: _process_aml_record() is called
-        Then: Expert review status is PENDING (ready for bulk approval)
+        Then: Expert review status is AGREED (auto-approved)
         """
         mock_response = create_mock_ai_response(valid_aml_response)
         mock_service = create_mock_ai_service(mock_response)
@@ -254,8 +256,8 @@ class TestProcessAMLRecordValidResponse:
             logger=logger
         )
 
-        # High confidence should be PENDING (awaiting bulk approval)
-        assert result["aml_expert_review_status"] == AMLExpertReviewStatus.PENDING.value
+        # High confidence should be AGREED (auto-approved)
+        assert result["aml_expert_review_status"] == AMLExpertReviewStatus.AGREED.value
         assert result["aml_requires_expert_review"] == False
 
     @pytest.mark.asyncio
@@ -528,11 +530,9 @@ class TestApplyAMLLabelingTask:
     async def test_empty_transaction_list(self):
         """Test handling of empty transaction list."""
         # Empty list should return immediately without calling AI service
-        # Patch the logger to avoid Prefect runtime context issues
-        with patch('src.tasks.ingestion.get_run_logger') as mock_get_logger:
-            mock_get_logger.return_value = mock_logger()
-            result = await apply_aml_labeling.fn([])
-            assert result == []
+        # The apply_aml_labeling is already imported at module level
+        result = await apply_aml_labeling([])
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_multiple_transactions_batch(
@@ -554,8 +554,9 @@ class TestApplyAMLLabelingTask:
             mock_get_logger.return_value = mock_logger()
 
             # Patch AIService at the module level where it's imported
+            # Use patch.object to mock the AIService class constructor
             with patch('src.services.ai_service.AIService', return_value=mock_service):
-                result = await apply_aml_labeling.fn(transactions)
+                result = await apply_aml_labeling(transactions)
 
                 assert len(result) == 5
                 for record in result:
@@ -582,7 +583,7 @@ class TestApplyAMLLabelingTask:
             mock_get_logger.return_value = mock_logger()
 
             with patch('src.services.ai_service.AIService', return_value=mock_service):
-                result = await apply_aml_labeling.fn([sample_transaction_record])
+                result = await apply_aml_labeling([sample_transaction_record])
 
                 labeled_record = result[0]
                 assert "aml_error" in labeled_record
@@ -610,7 +611,7 @@ class TestApplyAMLLabelingTask:
             mock_get_logger.return_value = mock_logger()
 
             with patch('src.services.ai_service.AIService', return_value=mock_service):
-                result = await apply_aml_labeling.fn([sample_transaction_record])
+                result = await apply_aml_labeling([sample_transaction_record])
 
                 labeled_record = result[0]
                 assert "aml_error" in labeled_record
@@ -635,7 +636,7 @@ class TestApplyAMLLabelingTask:
             mock_get_logger.return_value = mock_logger()
 
             with patch('src.services.ai_service.AIService', return_value=mock_service):
-                result = await apply_aml_labeling.fn([sample_transaction_record])
+                result = await apply_aml_labeling([sample_transaction_record])
 
                 labeled_record = result[0]
                 assert "aml_error" in labeled_record

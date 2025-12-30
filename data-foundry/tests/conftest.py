@@ -66,12 +66,18 @@ sys.modules['dlt'] = mock_dlt
 sys.modules['dlt.pipeline'] = mock_dlt.pipeline
 sys.modules['dlt.destinations'] = mock_dlt.destinations
 
-# Mock prefect module structure
-mock_prefect = Mock()
-mock_prefect.flow = Mock()
-mock_prefect.get_run_logger = Mock()
-mock_prefect.task = Mock()
-sys.modules['prefect'] = mock_prefect
+# Only mock prefect if it's not installed
+# This allows task tests to use real prefect decorators
+try:
+    import prefect
+    # prefect is installed, don't mock it
+except ImportError:
+    # Mock prefect module structure if not installed
+    mock_prefect = Mock()
+    mock_prefect.flow = Mock()
+    mock_prefect.get_run_logger = Mock()
+    mock_prefect.task = Mock()
+    sys.modules['prefect'] = mock_prefect
 
 import pytest_asyncio
 from fastapi.testclient import TestClient

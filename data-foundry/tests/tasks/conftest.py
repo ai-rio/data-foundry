@@ -1,19 +1,19 @@
 """
 Pytest configuration for tasks tests.
 
-This conftest is isolated to avoid importing the main FastAPI app
-which has dependencies that may not be installed in all environments.
+This conftest extends the main conftest.py for task-specific testing.
+Database fixtures and other shared fixtures are inherited from conftest.py
 """
 
 import pytest
 import sys
 import os
 from pathlib import Path
+from unittest.mock import Mock, AsyncMock
 
-# Add project root to path
+# Add project root to path FIRST
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
-
 
 # Minimal fixtures for tasks tests
 @pytest.fixture
