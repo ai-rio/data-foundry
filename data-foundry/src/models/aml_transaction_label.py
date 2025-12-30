@@ -63,6 +63,11 @@ class AMLTransactionLabel(SQLModel, table=True):
         description="Tenant identifier for multi-tenancy isolation"
     )
 
+    job_id: str = Field(
+        index=True,
+        description="Processing job that generated this AML label"
+    )
+
     version_id: Optional[str] = Field(
         default=None,
         description="Methodology version ID used for this label"
@@ -173,6 +178,7 @@ class AMLTransactionLabel(SQLModel, table=True):
             "id": str(self.id) if self.id else "",
             "transaction_id": str(self.transaction_id) if self.transaction_id else "",
             "tenant_id": str(self.tenant_id) if self.tenant_id else "",
+            "job_id": str(self.job_id) if hasattr(self, 'job_id') and self.job_id else "",
             "risk_level": self.risk_level.value if isinstance(self.risk_level, AMLRiskLevel) else str(self.risk_level),
             "typology": str(self.typology) if self.typology else "",
             "confidence_score": str(self.confidence_score) if self.confidence_score else "",
@@ -238,6 +244,7 @@ class AMLTransactionLabel(SQLModel, table=True):
             "id": self.id,
             "transaction_id": self.transaction_id,
             "tenant_id": self.tenant_id,
+            "job_id": getattr(self, 'job_id', None),
             "risk_level": self.risk_level.value if isinstance(self.risk_level, AMLRiskLevel) else self.risk_level,
             "typology": self.typology,
             "confidence_score": str(self.confidence_score) if self.confidence_score else None,

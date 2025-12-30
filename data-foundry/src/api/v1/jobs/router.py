@@ -27,7 +27,7 @@ from src.domain.processing_job.exceptions import (
     JobNotFoundError,
     InvalidStateTransition,
 )
-from src.models.processed_data import ProcessedData
+from src.models.aml_transaction_label import AMLTransactionLabel
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +79,27 @@ async def get_current_tenant(
 # -----------------------------------------------------------------
 
 def job_to_contract(job: ProcessingJob) -> JobStatusContract:
-    """Convert domain job to API contract."""
+    """
+    Convert domain job to API contract with AML metrics.
+
+    Extracts AML-specific fields from job metadata when available.
+    AML fields are only populated for completed jobs that have AML processing results.
+
+    Args:
+        job: ProcessingJob domain object
+
+    Returns:
+        JobStatusContract with AML metrics if available
+    """
+    # Extract AML results from metadata if present
+    aml_results = job.metadata.get("aml_results", {}) if job.metadata else {}
+
+    # Map AML fields from job metadata to contract
+    aml_risk_level_counts = aml_results.get("risk_level_counts")
+    aml_inter_rater_agreement = aml_results.get("inter_rater_agreement")
+    aml_expert_review_count = aml_results.get("expert_review_count")
+    aml_audit_report_url = aml_results.get("audit_report_url")
+
     return JobStatusContract(
         job_id=job.id,
         tenant_id=job.tenant_id,
@@ -97,6 +117,11 @@ def job_to_contract(job: ProcessingJob) -> JobStatusContract:
         error_message=job.error_message,
         retry_count=job.retry_count,
         can_retry=job.can_retry,
+        # AML-specific fields (None if not available)
+        aml_risk_level_counts=aml_risk_level_counts,
+        aml_inter_rater_agreement=aml_inter_rater_agreement,
+        aml_expert_review_count=aml_expert_review_count,
+        aml_audit_report_url=aml_audit_report_url,
     )
 
 
@@ -123,6 +148,13 @@ async def get_job_status(
     - Cost information
     - Results (if complete)
     - Error details (if failed)
+    - AML metrics (for completed AML processing jobs):
+        * aml_risk_level_counts: Distribution of transactions by risk level
+        * aml_inter_rater_agreement: Cohen's Kappa for AI-expert agreement
+        * aml_expert_review_count: Number of labels reviewed by experts
+        * aml_audit_report_url: Link to generated AML audit report
+
+    For incomplete or non-AML jobs, AML fields will be null.
     """
     try:
         job = await service.get_job_or_fail(job_id)
@@ -353,19 +385,29 @@ async def download_results(
     """
     Download job results as CSV.
 
-    Returns processed data records for the completed job as a downloadable CSV file.
+    Returns AML transaction labels for the completed job as a downloadable CSV file.
     Only available for completed jobs with result records.
 
     Phase 2 Test Harness Support:
-    - Returns CSV with record_id, tenant_id, confidence_score, ai_category, cleaned_data
+    - Returns CSV with AML labels: transaction_id, risk_level, typology, confidence_score, etc.
     - Includes tenant isolation check
     - Validates job is complete before returning results
+    - Uses AMLTransactionLabel.to_csv_row() for CSV generation
+
+    CRITICAL FIX P01-013:
+    - Filters AML labels by job_id (returns only job-specific labels, not all tenant labels)
+    - Returns 404 if no labels found for job
+    - Includes job_id field in CSV export
     """
     try:
         # Get job and verify access
         job = await service.get_job_or_fail(job_id)
 
         if job.tenant_id != tenant_id:
+            logger.warning(
+                f"Access denied for tenant {tenant_id} to job {job_id} "
+                f"(owned by {job.tenant_id})"
+            )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Access denied to this job",
@@ -377,55 +419,55 @@ async def download_results(
                 detail=f"Job is not complete (status: {job.status.value})",
             )
 
-        # Query processed data for this job
-        # ProcessedData has processing_job_id field that links to job
-        query = select(ProcessedData).where(
-            ProcessedData.processing_job_id == job_id,
-            ProcessedData.tenant_id == tenant_id,
+        # Query AML transaction labels for this job
+        # P01-013: Filter by job_id to return only job-specific labels
+        # Filter by tenant_id for multi-tenancy isolation
+        query = select(AMLTransactionLabel).where(
+            AMLTransactionLabel.job_id == job_id,
+            AMLTransactionLabel.tenant_id == tenant_id,
         )
         result = await session.execute(query)
-        records = result.scalars().all()
+        labels = result.scalars().all()
 
-        # If no records found, check if job has result_records count
-        # and return empty CSV with headers for test compatibility
-        if not records:
-            logger.info(
-                f"No processed_data records found for job {job_id}. "
+        # CRITICAL: Return 404 if no labels found (fixes "0 records downloaded" bug)
+        if not labels:
+            logger.warning(
+                f"No AML labels found for job {job_id}, tenant {tenant_id}. "
                 f"Job result_records: {job.result_records}"
             )
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No AML labels found for job {job_id}. "
+                       f"The job may not have generated any labels yet."
+            )
 
-        # Generate CSV
+        # Log audit trail for download
+        logger.info(
+            f"Downloading AML labels for job {job_id}, tenant {tenant_id}: "
+            f"{len(labels)} records"
+        )
+
+        # Generate CSV using AMLTransactionLabel.to_csv_row()
         output = io.StringIO()
-        fieldnames = [
-            "record_id",
-            "tenant_id",
-            "confidence_score",
-            "auto_approved",
-            "ai_category",
-            "ai_confidence",
-            "data_quality_score",
-            "cleaned_data",
-            "processed_at",
-        ]
-        writer = csv.DictWriter(output, fieldnames=fieldnames)
-        writer.writeheader()
 
-        for record in records:
-            writer.writerow({
-                "record_id": record.record_id,
-                "tenant_id": record.tenant_id,
-                "confidence_score": record.confidence_score,
-                "auto_approved": record.auto_approved,
-                "ai_category": record.ai_category,
-                "ai_confidence": record.ai_confidence,
-                "data_quality_score": record.data_quality_score,
-                "cleaned_data": record.cleaned_data,
-                "processed_at": record.processed_at.isoformat() if record.processed_at else "",
-            })
+        # Get headers from first label's to_csv_row() method
+        if labels:
+            fieldnames = list(labels[0].to_csv_row().keys())
+            writer = csv.DictWriter(output, fieldnames=fieldnames)
+            writer.writeheader()
+
+            for label in labels:
+                try:
+                    writer.writerow(label.to_csv_row())
+                except Exception as e:
+                    logger.error(
+                        f"Error converting label {label.id} to CSV row: {e}"
+                    )
+                    continue
 
         # Prepare streaming response
         output.seek(0)
-        filename = f"job_{job_id}_results.csv"
+        filename = f"job_{job_id}_aml_results.csv"
 
         return StreamingResponse(
             iter([output.getvalue()]),
@@ -439,4 +481,17 @@ async def download_results(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Job not found: {job_id}",
+        )
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        # Handle unexpected errors gracefully
+        logger.error(
+            f"Unexpected error downloading results for job {job_id}: {e}",
+            exc_info=True
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error generating results download: {str(e)}",
         )

@@ -196,8 +196,7 @@ async def db_setup() -> AsyncGenerator[None, None]:
     from src.models.aml_expert_review import AMLExpertReview
     from src.models.aml_audit_report import AMLAuditReport
     from src.models.aml_labeling_methodology import AMLLabelingMethodology
-    from src.models.processing_job import ProcessingJobDB
-    from src.services.stripe_service import StripeCustomer, StripeSubscription, StripeMeterEvent, BillingEvent
+    from src.infrastructure.repositories.job_repository import ProcessingJobDB
 
     # Create all tables
     SQLModel.metadata.create_all(db_connection._sync_engine)

@@ -1737,7 +1737,8 @@ def save_to_database(
 @task
 async def save_aml_labels_to_database(
     labeled_records: list[dict[str, Any]],
-    tenant_id: str
+    tenant_id: str,
+    job_id: str
 ) -> dict[str, Any]:
     """
     Save AML-labeled records to database in batches.
@@ -1745,12 +1746,15 @@ async def save_aml_labels_to_database(
     P01-007: Implement AML labels persistence with batch insert, transaction
     handling, and duplicate detection.
 
+    P01-013: Added job_id parameter for job-specific label queries.
+
     FEATURES:
     - Batch insert: Process 100-500 records at a time for performance
     - Transaction handling: All-or-nothing per batch with commit/rollback
     - Duplicate handling: Skip records that already exist (based on transaction_id)
     - Error handling: Continue processing on individual record failures
     - Return metrics: total_saved, duplicates_skipped, errors
+    - Job tracking: Associates labels with the processing job that created them
 
     BATCH SIZE OPTIMIZATION:
     - Uses settings.DEFAULT_BATCH_SIZE (default: 500)
@@ -1777,6 +1781,7 @@ async def save_aml_labels_to_database(
             - aml_expert_review_status: Review workflow status
             - aml_regulatory_flags: Optional regulatory flags list
         tenant_id: Tenant identifier for multi-tenancy isolation
+        job_id: Processing job identifier that generated these labels
 
     Returns:
         Dictionary with metrics:
@@ -1792,12 +1797,13 @@ async def save_aml_labels_to_database(
     Example:
         >>> result = await save_aml_labels_to_database(
         ...     labeled_records=labeled_data,
-        ...     tenant_id="tenant_001"
+        ...     tenant_id="tenant_001",
+        ...     job_id="job_abc123"
         ... )
         >>> print(f"Saved {result['total_saved']} labels, "
         ...       f"skipped {result['duplicates_skipped']} duplicates")
 
-    Reference: P01-007 (Save AML Labels to Database)
+    Reference: P01-007 (Save AML Labels to Database), P01-013 (Add job_id)
     """
     from datetime import datetime
     from decimal import Decimal
@@ -1888,6 +1894,7 @@ async def save_aml_labels_to_database(
                                 "id": str(uuid4()),
                                 "transaction_id": str(transaction_id),
                                 "tenant_id": tenant_id,
+                                "job_id": job_id,
                                 "risk_level": risk_level,
                                 "typology": record.get("aml_typology", "ML"),
                                 "confidence_score": Decimal(
@@ -1936,6 +1943,7 @@ async def save_aml_labels_to_database(
                                 "id": label["id"],
                                 "transaction_id": label["transaction_id"],
                                 "tenant_id": label["tenant_id"],
+                                "job_id": label["job_id"],
                                 "version_id": None,
                                 "risk_level": label["risk_level"].value,
                                 "typology": label["typology"],
@@ -1958,13 +1966,13 @@ async def save_aml_labels_to_database(
                         # Bulk operation: single execute() with all parameters
                         insert_stmt = text("""
                             INSERT INTO aml_transaction_labels (
-                                id, transaction_id, tenant_id, version_id,
+                                id, transaction_id, tenant_id, job_id, version_id,
                                 risk_level, typology, confidence_score, ai_reasoning,
                                 expert_review_status, regulatory_flags,
                                 is_audit_ready, is_deleted, deleted_by, deleted_at,
                                 created_at, updated_at, updated_by
                             ) VALUES (
-                                :id, :transaction_id, :tenant_id, :version_id,
+                                :id, :transaction_id, :tenant_id, :job_id, :version_id,
                                 :risk_level, :typology, :confidence_score, :ai_reasoning,
                                 :expert_review_status, :regulatory_flags,
                                 :is_audit_ready, :is_deleted, :deleted_by, :deleted_at,
