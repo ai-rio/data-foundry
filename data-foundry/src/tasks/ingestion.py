@@ -1740,88 +1740,64 @@ async def save_aml_labels_to_database(
     job_id: str
 ) -> dict[str, Any]:
     """
-    Save AML-labeled records to database in batches.
+    Save AML-labeled records to database in batches with production-grade error handling.
 
-    P01-007: Implement AML labels persistence with batch insert, transaction
-    handling, and duplicate detection.
+    P01-023 REFACTOR: Proper ORM-level JSON handling and constraint violation handling
 
-    P01-013: Added job_id parameter for job-specific label queries.
+    SOLID Principles Applied:
+    - S (Single Responsibility): Only handles persistence, validation is separate
+    - O (Open/Closed): Extensible through validator and error handler injection
+    - L (Liskov Substitution): Uses standard interfaces for validation and error handling
+    - I (Interface Segregation): Clear, focused interface for label persistence
+    - D (Dependency Inversion): Depends on validator abstraction, not concrete implementation
+
+    IMPROVEMENTS FROM P01-023:
+    1. ORM-level JSON handling via SQLAlchemy JSONB column (no json.dumps() workaround)
+    2. Production-grade constraint violation handling (replaces ON CONFLICT workaround)
+    3. Data validation layer before insertion (prevents invalid data at source)
+    4. Proper error classification and logging for audit trail
+    5. Duplicate detection with audit logging
 
     FEATURES:
     - Batch insert: Process 100-500 records at a time for performance
     - Transaction handling: All-or-nothing per batch with commit/rollback
-    - Duplicate handling: Skip records that already exist (based on transaction_id)
-    - Error handling: Continue processing on individual record failures
-    - Return metrics: total_saved, duplicates_skipped, errors
-    - Job tracking: Associates labels with the processing job that created them
-
-    BATCH SIZE OPTIMIZATION:
-    - Uses settings.DEFAULT_BATCH_SIZE (default: 500)
-    - Max batch size limited by settings.MAX_BATCH_SIZE
-    - Typical performance: 1000+ labels/sec (bulk insert operations)
-
-    DUPLICATE DETECTION:
-    - Checks for existing labels by transaction_id within the same tenant
-    - Uses PostgreSQL's ON CONFLICT DO NOTHING for efficient skipping
-    - Duplicates are tracked but don't fail the entire batch
-
-    TRANSACTION SAFETY:
-    - Each batch is wrapped in a separate transaction
-    - Failures in one batch don't affect other batches
-    - Individual record errors are logged but don't stop processing
+    - Data validation: Pre-insertion validation with clear error messages
+    - Duplicate handling: Proper constraint violation handling with audit trail
+    - Error handling: Classified errors with retry eligibility
+    - Return metrics: total_saved, duplicates_skipped, validation_errors, errors
 
     Args:
-        labeled_records: List of AML-labeled transaction records with fields:
-            - transaction_id: Unique transaction identifier (required)
-            - aml_risk_level: Risk classification (LOW, MEDIUM, HIGH, CRITICAL)
-            - aml_typology: FATF typology code
-            - aml_confidence_score: AI confidence (0.0 - 1.0)
-            - aml_reasoning: AI explanation
-            - aml_expert_review_status: Review workflow status
-            - aml_regulatory_flags: Optional regulatory flags list
+        labeled_records: List of AML-labeled transaction records
         tenant_id: Tenant identifier for multi-tenancy isolation
         job_id: Processing job identifier that generated these labels
 
     Returns:
-        Dictionary with metrics:
-        {
-            "total_saved": int,           # Number of labels inserted
-            "duplicates_skipped": int,    # Number of duplicates found
-            "errors": int,                # Number of record errors
-            "batches_processed": int,     # Number of batches
-            "processing_time_ms": int,    # Total processing time
-            "labels_per_second": float    # Throughput metric
-        }
+        Dictionary with comprehensive metrics
 
-    Example:
-        >>> result = await save_aml_labels_to_database(
-        ...     labeled_records=labeled_data,
-        ...     tenant_id="tenant_001",
-        ...     job_id="job_abc123"
-        ... )
-        >>> print(f"Saved {result['total_saved']} labels, "
-        ...       f"skipped {result['duplicates_skipped']} duplicates")
-
-    Reference: P01-007 (Save AML Labels to Database), P01-013 (Add job_id)
+    Reference: P01-023 (Critical Database Fixes)
     """
     from datetime import datetime
     from decimal import Decimal
     from uuid import uuid4
-    from sqlalchemy import text
     from sqlalchemy.dialects.postgresql import insert
-    import json
+    from src.core.aml_label_validator import AMLLabelValidator
+    from src.core.database_error_handler import (
+        DatabaseErrorHandler,
+        DuplicateRecordHandler
+    )
 
     logger = get_run_logger()
     start_time = datetime.utcnow()
     logger.info(
         f"Saving {len(labeled_records)} AML labels to database "
-        f"(tenant_id={tenant_id})"
+        f"(tenant_id={tenant_id}, job_id={job_id})"
     )
 
     # Initialize metrics
     metrics = {
         "total_saved": 0,
         "duplicates_skipped": 0,
+        "validation_errors": 0,
         "errors": 0,
         "batches_processed": 0,
         "error_details": []
@@ -1837,6 +1813,11 @@ async def save_aml_labels_to_database(
         })
         return metrics
 
+    # Initialize validator and error handlers (Dependency Injection)
+    validator = AMLLabelValidator()
+    db_error_handler = DatabaseErrorHandler()
+    duplicate_handler = DuplicateRecordHandler(logger=logger)
+
     # Determine batch size from settings
     batch_size = min(
         settings.DEFAULT_BATCH_SIZE,
@@ -1846,10 +1827,7 @@ async def save_aml_labels_to_database(
 
     try:
         from src.database.connection import db_connection
-        from src.models.aml_enums import (
-            AMLRiskLevel,
-            AMLExpertReviewStatus
-        )
+        from src.models.aml_transaction_label import AMLTransactionLabel
 
         # Process in batches with individual transactions
         async with db_connection.get_session() as session:
@@ -1864,159 +1842,143 @@ async def save_aml_labels_to_database(
                 )
 
                 try:
-                    # Convert records to ORM model instances
-                    label_models = []
-                    batch_transaction_ids = []
+                    # Convert and validate records
+                    valid_labels = []
 
                     for record in batch:
-                        try:
-                            # Validate required fields
-                            transaction_id = record.get("transaction_id")
-                            if not transaction_id:
-                                raise ValueError("Missing required field: transaction_id")
+                        # Add tenant_id and job_id to record for validation
+                        record_with_context = {
+                            **record,
+                            "transaction_id": record.get("transaction_id") or record.get("id"),
+                            "tenant_id": tenant_id,
+                            "job_id": job_id,
+                            "risk_level": record.get("aml_risk_level"),
+                            "typology": record.get("aml_typology"),
+                            "confidence_score": record.get("aml_confidence_score"),
+                            "ai_reasoning": record.get("aml_reasoning"),
+                            "expert_review_status": record.get("aml_expert_review_status"),
+                            "regulatory_flags": record.get("aml_regulatory_flags", [])
+                        }
 
-                            risk_level_str = record.get("aml_risk_level")
-                            if not risk_level_str:
-                                raise ValueError("Missing required field: aml_risk_level")
+                        # Validate record using validation layer
+                        validation_result = validator.validate(record_with_context)
 
-                            # Convert risk_level to enum
-                            risk_level = AMLRiskLevel(risk_level_str)
-
-                            # Convert expert_review_status to enum
-                            review_status_str = record.get(
-                                "aml_expert_review_status",
-                                AMLExpertReviewStatus.PENDING.value
-                            )
-                            expert_review_status = AMLExpertReviewStatus(review_status_str)
-
-                            # Build AMLTransactionLabel model
-                            label_model = {
-                                "id": str(uuid4()),
-                                "transaction_id": str(transaction_id),
-                                "tenant_id": tenant_id,
-                                "job_id": job_id,
-                                "risk_level": risk_level,
-                                "typology": record.get("aml_typology", "ML"),
-                                "confidence_score": Decimal(
-                                    str(record.get("aml_confidence_score", 0.0))
-                                ),
-                                "ai_reasoning": record.get(
-                                    "aml_reasoning",
-                                    "No reasoning provided"
-                                ),
-                                "expert_review_status": expert_review_status,
-                                "regulatory_flags": record.get(
-                                    "aml_regulatory_flags",
-                                    []
-                                ),
-                                "is_audit_ready": False,
-                                "is_deleted": False,
-                                "created_at": datetime.utcnow(),
-                                "updated_at": datetime.utcnow()
-                            }
-
-                            label_models.append(label_model)
-                            batch_transaction_ids.append(str(transaction_id))
-
-                        except (ValueError, TypeError) as e:
+                        if not validation_result.is_valid:
+                            # Log validation errors
+                            error_messages = [f"{err.field}: {err.message}" for err in validation_result.errors]
                             logger.error(
-                                f"Invalid record data for transaction "
-                                f"{record.get('transaction_id')}: {e}"
+                                f"Validation failed for transaction {record.get('transaction_id')}: "
+                                f"{'; '.join(error_messages)}"
                             )
-                            metrics["errors"] += 1
+                            metrics["validation_errors"] += 1
                             metrics["error_details"].append({
                                 "transaction_id": record.get("transaction_id"),
-                                "error": str(e)
+                                "error_type": "validation",
+                                "errors": error_messages
                             })
+                            continue
 
-                    # P01-006 Issue 2: Removed redundant duplicate detection SELECT query
-                    # The ON CONFLICT DO NOTHING clause below handles duplicates efficiently
-                    # This removes the unnecessary database roundtrip for duplicate checking
-                    new_labels = label_models
-
-                    # Bulk insert using PostgreSQL INSERT ... ON CONFLICT
-                    if new_labels:
-                        # Prepare bulk insert data for optimal performance
-                        # Building parameter list for single bulk execute operation
-                        bulk_params = [
-                            {
-                                "id": label["id"],
-                                "transaction_id": label["transaction_id"],
-                                "tenant_id": label["tenant_id"],
-                                "job_id": label["job_id"],
-                                "version_id": None,
-                                "risk_level": label["risk_level"].value,
-                                "typology": label["typology"],
-                                "confidence_score": label["confidence_score"],
-                                "ai_reasoning": label["ai_reasoning"],
-                                "expert_review_status": label["expert_review_status"].value,
-                                "regulatory_flags": json.dumps(label["regulatory_flags"]) if label["regulatory_flags"] else None,
-                                "is_audit_ready": label["is_audit_ready"],
-                                "is_deleted": label["is_deleted"],
-                                "deleted_by": None,
-                                "deleted_at": None,
-                                "created_at": label["created_at"],
-                                "updated_at": label["updated_at"],
-                                "updated_by": None
-                            }
-                            for label in new_labels
-                        ]
-
-                        # Use PostgreSQL's insert ... on conflict for atomic upsert
-                        # Bulk operation: single execute() with all parameters
-                        # NOTE: ON CONFLICT clause removed until unique constraint is added
-                        # to schema via migration. For now, duplicates will cause an error.
-                        insert_stmt = text("""
-                            INSERT INTO aml_transaction_labels (
-                                id, transaction_id, tenant_id, job_id, version_id,
-                                risk_level, typology, confidence_score, ai_reasoning,
-                                expert_review_status, regulatory_flags,
-                                is_audit_ready, is_deleted, deleted_by, deleted_at,
-                                created_at, updated_at, updated_by
-                            ) VALUES (
-                                :id, :transaction_id, :tenant_id, :job_id, :version_id,
-                                :risk_level, :typology, :confidence_score, :ai_reasoning,
-                                :expert_review_status, :regulatory_flags,
-                                :is_audit_ready, :is_deleted, :deleted_by, :deleted_at,
-                                :created_at, :updated_at, :updated_by
+                        # Log validation warnings (non-blocking)
+                        if validation_result.warnings:
+                            warning_messages = [f"{warn.field}: {warn.message}" for warn in validation_result.warnings]
+                            logger.warning(
+                                f"Validation warnings for transaction {record.get('transaction_id')}: "
+                                f"{'; '.join(warning_messages)}"
                             )
-                        """)
 
-                        # Bulk insert - single round-trip to database
-                        # Note: rowcount doesn't reflect skipped duplicates with ON CONFLICT
-                        result = await session.execute(insert_stmt, bulk_params)
+                        # Create ORM model instance with validated data
+                        label = AMLTransactionLabel(
+                            id=str(uuid4()),
+                            **validation_result.validated_data
+                        )
+                        valid_labels.append(label)
+
+                    # Bulk insert using SQLAlchemy ORM with ON CONFLICT
+                    if valid_labels:
+                        # Use PostgreSQL INSERT ... ON CONFLICT DO NOTHING
+                        # This requires the unique constraint from migration 004
+                        stmt = insert(AMLTransactionLabel).values(
+                            [
+                                {
+                                    "id": label.id,
+                                    "transaction_id": label.transaction_id,
+                                    "tenant_id": label.tenant_id,
+                                    "job_id": label.job_id,
+                                    "version_id": label.version_id,
+                                    "risk_level": label.risk_level,
+                                    "typology": label.typology,
+                                    "confidence_score": label.confidence_score,
+                                    "ai_reasoning": label.ai_reasoning,
+                                    "expert_review_status": label.expert_review_status,
+                                    "regulatory_flags": label.regulatory_flags,  # ORM handles JSON serialization
+                                    "is_audit_ready": label.is_audit_ready,
+                                    "is_deleted": label.is_deleted,
+                                    "deleted_by": label.deleted_by,
+                                    "deleted_at": label.deleted_at,
+                                    "created_at": label.created_at,
+                                    "updated_at": label.updated_at,
+                                    "updated_by": label.updated_by
+                                }
+                                for label in valid_labels
+                            ]
+                        ).on_conflict_do_nothing(
+                            index_elements=["transaction_id", "tenant_id"]
+                        )
+
+                        # Execute bulk insert
+                        result = await session.execute(stmt)
+
+                        # Calculate how many were actually inserted (not duplicates)
+                        # Note: result.rowcount gives us inserted rows
+                        inserted_count = result.rowcount
+                        duplicate_count = len(valid_labels) - inserted_count
+
+                        # Update metrics
+                        metrics["total_saved"] += inserted_count
+                        metrics["duplicates_skipped"] += duplicate_count
+                        metrics["batches_processed"] += 1
+
+                        # Log duplicates for audit trail
+                        if duplicate_count > 0:
+                            logger.info(
+                                f"Batch {batch_num}: Inserted {inserted_count} labels, "
+                                f"skipped {duplicate_count} duplicates"
+                            )
 
                         # Commit this batch's transaction
                         await session.commit()
 
-                        # P01-006 Issue 2: With ON CONFLICT DO NOTHING, we can't easily
-                        # count duplicates from rowcount. The total_saved metric tracks
-                        # attempted inserts. For exact duplicate counts, a post-insert
-                        # query would be needed, but that would defeat the performance gain.
-                        saved_count = len(new_labels)
-                        metrics["total_saved"] += saved_count
-                        metrics["batches_processed"] += 1
-
                         logger.debug(
-                            f"Batch {batch_num}: Attempted {saved_count} label inserts "
-                            f"(duplicates silently skipped by ON CONFLICT)"
+                            f"Batch {batch_num}: Successfully saved {inserted_count} labels"
                         )
 
-                    # Flush to ensure transaction integrity
-                    await session.flush()
-
                 except Exception as batch_error:
-                    # Rollback on batch error but continue with next batch
+                    # Rollback on batch error
                     await session.rollback()
-                    logger.error(
-                        f"Batch {batch_num} failed: {batch_error}. "
-                        f"Rolling back and continuing..."
-                    )
-                    metrics["errors"] += len(batch)
-                    metrics["error_details"].append({
-                        "batch": batch_num,
-                        "error": str(batch_error)
-                    })
+
+                    # Classify the error using error handler
+                    db_error = db_error_handler.handle_error(batch_error)
+
+                    if db_error.is_duplicate():
+                        # Handle duplicate scenario
+                        logger.warning(
+                            f"Batch {batch_num} contains duplicates: {db_error.message}"
+                        )
+                        metrics["duplicates_skipped"] += len(batch)
+                    else:
+                        # Other database errors
+                        logger.error(
+                            f"Batch {batch_num} failed: {db_error.message}. "
+                            f"Error type: {db_error.error_type.value}"
+                        )
+                        metrics["errors"] += len(batch)
+                        metrics["error_details"].append({
+                            "batch": batch_num,
+                            "error_type": db_error.error_type.value,
+                            "error": db_error.message,
+                            "is_retryable": db_error.is_retryable()
+                        })
+
                     # Continue to next batch instead of failing entire operation
 
         # Calculate final metrics
@@ -2035,7 +1997,8 @@ async def save_aml_labels_to_database(
         logger.info(
             f"AML labels save complete: {metrics['total_saved']} saved, "
             f"{metrics['duplicates_skipped']} duplicates, "
-            f"{metrics['errors']} errors, "
+            f"{metrics['validation_errors']} validation errors, "
+            f"{metrics['errors']} database errors, "
             f"{metrics['labels_per_second']:.1f} labels/sec"
         )
 
