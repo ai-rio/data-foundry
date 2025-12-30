@@ -100,9 +100,8 @@ async def mark_migration_executed(migration_name: str):
     """Mark a migration as executed."""
     async with db_connection.get_session() as session:
         await session.execute(text(
-            "INSERT INTO schema_migrations (migration_name) VALUES (:name)",
-            {"name": migration_name}
-        ))
+            "INSERT INTO schema_migrations (migration_name) VALUES (:name)"
+        ).bindparams(name=migration_name))
         await session.commit()
 
 
@@ -110,9 +109,8 @@ async def mark_migration_rolled_back(migration_name: str):
     """Remove a migration from the executed list."""
     async with db_connection.get_session() as session:
         await session.execute(text(
-            "DELETE FROM schema_migrations WHERE migration_name = :name",
-            {"name": migration_name}
-        ))
+            "DELETE FROM schema_migrations WHERE migration_name = :name"
+        ).bindparams(name=migration_name))
         await session.commit()
 
 

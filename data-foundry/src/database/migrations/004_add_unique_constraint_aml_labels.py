@@ -84,22 +84,41 @@ async def upgrade() -> None:
                               ORDER BY created_at DESC
                               LIMIT 1
                           )
-                    """), {"txn_id": txn_id, "tenant_id": tenant_id})
+                    """).bindparams(txn_id=txn_id, tenant_id=tenant_id))
 
                 await session.commit()
                 print(f"✓ Cleaned up {len(duplicates)} duplicate groups")
             else:
                 print("✓ No duplicates found - data is clean")
 
-            # Step 2: Drop the old partial unique index (from initial migration)
-            print("\n[STEP 2/4] Dropping old partial unique index if it exists...")
+            # Step 2: Physically delete soft-deleted duplicates
+            print("\n[STEP 2/4] Removing soft-deleted duplicate records...")
+            delete_result = await session.execute(text("""
+                DELETE FROM aml_transaction_labels
+                WHERE is_deleted = TRUE
+                AND (transaction_id, tenant_id) IN (
+                    SELECT transaction_id, tenant_id
+                    FROM aml_transaction_labels
+                    WHERE is_deleted = FALSE
+                    GROUP BY transaction_id, tenant_id
+                )
+            """))
+            deleted_count = delete_result.rowcount
+            if deleted_count > 0:
+                print(f"✓ Deleted {deleted_count} soft-deleted duplicate records")
+                await session.commit()
+            else:
+                print("✓ No soft-deleted duplicates to clean up")
+
+            # Step 3: Drop the old partial unique index (from initial migration)
+            print("\n[STEP 3/4] Dropping old partial unique index if it exists...")
             await session.execute(text("""
                 DROP INDEX IF EXISTS idx_aml_transaction_labels_uniq_transaction;
             """))
             print("✓ Dropped partial unique index")
 
-            # Step 3: Add the unique constraint
-            print("\n[STEP 3/4] Adding unique constraint...")
+            # Step 4: Add the unique constraint
+            print("\n[STEP 4/4] Adding unique constraint...")
             await session.execute(text("""
                 ALTER TABLE aml_transaction_labels
                 ADD CONSTRAINT uq_aml_transaction_labels_txn_tenant
@@ -107,8 +126,8 @@ async def upgrade() -> None:
             """))
             print("✓ Unique constraint added: uq_aml_transaction_labels_txn_tenant")
 
-            # Step 4: Add comment for documentation
-            print("\n[STEP 4/4] Adding documentation comments...")
+            # Step 5: Add comment for documentation
+            print("\n[STEP 5/5] Adding documentation comments...")
             await session.execute(text("""
                 COMMENT ON CONSTRAINT uq_aml_transaction_labels_txn_tenant
                 ON aml_transaction_labels IS
