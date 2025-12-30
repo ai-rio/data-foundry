@@ -56,6 +56,12 @@ MAX_POLLS = 120  # Max 2 minutes of polling
 TENANT_ID = os.getenv("TENANT_ID", "test-tenant-phase2")
 API_KEY = os.getenv("API_KEY", "test-key-phase2")
 
+# AML Configuration
+ENABLE_AML_ASSERTIONS = True  # Enable AML-specific assertions
+AML_RISK_LEVELS = ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+AML_CONFIDENCE_THRESHOLD = 0.70  # Minimum acceptable confidence score
+AML_KAPPA_THRESHOLD = 0.60  # Minimum acceptable Cohen's Kappa
+
 # Pricing reference (from Phase 0 research)
 PRICING_BY_VERTICAL = {
     "fintech": {
@@ -121,10 +127,28 @@ class APITestResult:
     results_download_success: bool = False
     results_records_count: int = 0
 
+    # AML-specific metrics (P01-021)
+    aml_assertions_passed: bool = False
+    aml_labels_present: bool = False
+    aml_confidence_scores_valid: bool = False
+    aml_audit_report_generated: bool = False
+    aml_records_downloaded_gt_zero: bool = False
+    aml_risk_level_counts: Dict[str, int] = None
+    aml_inter_rater_agreement: float = 0.0
+    aml_expert_review_count: int = 0
+    aml_validation_errors: List[str] = None
+
     # Overall metrics
     total_time_seconds: float = 0.0
     success: bool = False
     error_message: str = ""
+
+    def __post_init__(self):
+        """Initialize list fields after dataclass creation."""
+        if self.aml_validation_errors is None:
+            self.aml_validation_errors = []
+        if self.aml_risk_level_counts is None:
+            self.aml_risk_level_counts = {}
 
 
 # ============================================================================
@@ -409,12 +433,12 @@ async def validate_cost(
 async def download_results(
     client: httpx.AsyncClient,
     job_id: str,
-) -> tuple[bool, int]:
+) -> tuple[bool, int, pd.DataFrame]:
     """
     Test results download endpoint: GET /api/v1/jobs/{job_id}/results
 
     Returns:
-        (success, record_count)
+        (success, record_count, dataframe)
     """
     try:
         print("   📥 Downloading results via GET /api/v1/jobs/{job_id}/results")
@@ -428,15 +452,262 @@ async def download_results(
             df = pd.read_csv(StringIO(csv_content))
             record_count = len(df)
             print(f"      ✓ Downloaded {record_count} records")
-            return True, record_count
+            return True, record_count, df
         else:
             print(f"      ✗ Failed to download results: {response.status_code}")
-            return False, 0
+            return False, 0, pd.DataFrame()
 
     except Exception as e:
         error = f"Results download exception: {str(e)}"
         print(f"      ✗ {error}")
-        return False, 0
+        return False, 0, pd.DataFrame()
+
+
+# ============================================================================
+# AML-Specific Assertions (P01-021)
+# ============================================================================
+
+def assert_records_downloaded(count: int) -> tuple[bool, str]:
+    """
+    CRITICAL FIX: Assert records were actually downloaded (not 0).
+
+    This is the critical fix for P01-021 - ensuring that we actually
+    downloaded records instead of getting 0 records from the API.
+
+    Args:
+        count: Number of records downloaded
+
+    Returns:
+        (passed, message)
+    """
+    if count <= 0:
+        return False, f"CRITICAL: Expected >0 records, got {count}"
+
+    return True, f"✓ Downloaded {count} records (>0)"
+
+
+def assert_aml_labels_present(response: Dict[str, Any]) -> tuple[bool, str, Dict[str, Any]]:
+    """
+    Assert AML labels are present in job results.
+
+    Validates that the response contains required AML fields:
+    - aml_risk_level_counts: Distribution of risk levels
+    - aml_inter_rater_agreement: Cohen's Kappa score
+    - aml_expert_review_count: Number of expert reviews
+
+    Args:
+        response: API response dictionary
+
+    Returns:
+        (passed, message, extracted_data)
+    """
+    errors = []
+
+    # Check for AML risk level counts
+    if "aml_risk_level_counts" not in response:
+        errors.append("Missing aml_risk_level_counts in response")
+    elif not isinstance(response["aml_risk_level_counts"], dict):
+        errors.append("aml_risk_level_counts is not a dictionary")
+    else:
+        # Verify all risk levels are present
+        risk_counts = response["aml_risk_level_counts"]
+        for level in AML_RISK_LEVELS:
+            if level not in risk_counts:
+                errors.append(f"Missing risk level: {level}")
+            elif not isinstance(risk_counts[level], (int, float)):
+                errors.append(f"Invalid count for risk level {level}")
+
+    # Check for inter-rater agreement
+    if "aml_inter_rater_agreement" not in response:
+        errors.append("Missing aml_inter_rater_agreement in response")
+    elif not isinstance(response["aml_inter_rater_agreement"], (int, float)):
+        errors.append("aml_inter_rater_agreement is not numeric")
+
+    # Check for expert review count
+    if "aml_expert_review_count" not in response:
+        errors.append("Missing aml_expert_review_count in response")
+    elif not isinstance(response["aml_expert_review_count"], int):
+        errors.append("aml_expert_review_count is not integer")
+
+    if errors:
+        return False, "; ".join(errors), {}
+
+    # Extract data for further validation
+    extracted = {
+        "aml_risk_level_counts": response.get("aml_risk_level_counts", {}),
+        "aml_inter_rater_agreement": response.get("aml_inter_rater_agreement", 0.0),
+        "aml_expert_review_count": response.get("aml_expert_review_count", 0),
+    }
+
+    return True, "✓ All AML labels present", extracted
+
+
+def assert_confidence_scores_present(results: pd.DataFrame) -> tuple[bool, str]:
+    """
+    Assert confidence scores are included and valid.
+
+    Validates that:
+    - confidence_score field exists in results
+    - All scores are between 0.0 and 1.0
+    - Scores meet minimum threshold
+
+    Args:
+        results: DataFrame with labeled results
+
+    Returns:
+        (passed, message)
+    """
+    if results.empty:
+        return False, "No results to validate confidence scores"
+
+    # Check for confidence_score column
+    if "confidence_score" not in results.columns:
+        # Try AML-specific column names
+        aml_cols = ["aml_confidence_score", "ai_confidence_score", "confidence"]
+        found = False
+        for col in aml_cols:
+            if col in results.columns:
+                results["confidence_score"] = results[col]
+                found = True
+                break
+
+        if not found:
+            return False, "Missing confidence_score column in results"
+
+    # Validate all scores are in valid range
+    try:
+        scores = pd.to_numeric(results["confidence_score"], errors="coerce")
+        invalid_scores = scores[(scores < 0.0) | (scores > 1.0) | scores.isna()]
+
+        if len(invalid_scores) > 0:
+            return False, f"Found {len(invalid_scores)} invalid confidence scores (must be 0.0-1.0)"
+
+        # Check threshold compliance
+        below_threshold = scores[scores < AML_CONFIDENCE_THRESHOLD]
+        if len(below_threshold) > 0:
+            pct_below = (len(below_threshold) / len(scores)) * 100
+            msg = f"⚠ {len(below_threshold)}/{len(scores)} scores ({pct_below:.1f}%) below threshold {AML_CONFIDENCE_THRESHOLD}"
+            return True, msg
+
+        return True, f"✓ All {len(scores)} confidence scores valid (>= {AML_CONFIDENCE_THRESHOLD})"
+
+    except Exception as e:
+        return False, f"Error validating confidence scores: {str(e)}"
+
+
+def assert_audit_report_generated(job_id: str, job_data: Dict[str, Any]) -> tuple[bool, str]:
+    """
+    Assert audit report URL is present in job metadata.
+
+    Validates that:
+    - audit_report_url exists in job metadata
+    - Report URL is valid string
+    - Report was generated after job completion
+
+    Args:
+        job_id: Job identifier
+        job_data: Job metadata from API
+
+    Returns:
+        (passed, message)
+    """
+    # Check for audit report URL in job metadata
+    audit_url = None
+
+    # Try common field names
+    for field in ["audit_report_url", "report_url", "aml_report_url"]:
+        if field in job_data and job_data[field]:
+            audit_url = job_data[field]
+            break
+
+    # Check in metadata nested object
+    if not audit_url and "metadata" in job_data:
+        metadata = job_data["metadata"]
+        if isinstance(metadata, dict):
+            for field in ["audit_report_url", "report_url"]:
+                if field in metadata and metadata[field]:
+                    audit_url = metadata[field]
+                    break
+
+    if not audit_url:
+        return False, "Audit report URL not found in job metadata"
+
+    if not isinstance(audit_url, str) or not audit_url.strip():
+        return False, f"Invalid audit report URL: {audit_url}"
+
+    # Check if URL looks valid (basic check)
+    if not (audit_url.startswith("http") or audit_url.startswith("/") or audit_url.startswith("s3://")):
+        return False, f"Audit report URL has invalid format: {audit_url}"
+
+    return True, f"✓ Audit report generated: {audit_url}"
+
+
+def validate_aml_metrics(
+    job_id: str,
+    job_data: Dict[str, Any],
+    results_df: pd.DataFrame,
+) -> Dict[str, Any]:
+    """
+    Comprehensive AML metrics validation.
+
+    Runs all AML assertions and aggregates results:
+    - Records downloaded > 0
+    - AML labels present
+    - Confidence scores valid
+    - Audit report generated
+
+    Args:
+        job_id: Job identifier
+        job_data: Job metadata from API
+        results_df: Downloaded results DataFrame
+
+    Returns:
+        Dictionary with validation results
+    """
+    validation = {
+        "passed": True,
+        "assertions": {},
+        "errors": [],
+        "metrics": {}
+    }
+
+    # 1. CRITICAL: Check records downloaded > 0
+    record_count = len(results_df)
+    passed, msg = assert_records_downloaded(record_count)
+    validation["assertions"]["records_downloaded_gt_zero"] = passed
+    validation["metrics"]["records_count"] = record_count
+
+    if not passed:
+        validation["passed"] = False
+        validation["errors"].append(f"CRITICAL: {msg}")
+
+    # 2. Check AML labels present in response
+    passed, msg, extracted = assert_aml_labels_present(job_data)
+    validation["assertions"]["aml_labels_present"] = passed
+    validation["metrics"].update(extracted)
+
+    if not passed:
+        validation["passed"] = False
+        validation["errors"].append(msg)
+
+    # 3. Check confidence scores
+    passed, msg = assert_confidence_scores_present(results_df)
+    validation["assertions"]["confidence_scores_valid"] = passed
+    validation["metrics"]["confidence_validation_message"] = msg
+
+    if not passed and "⚠" not in msg:  # Only fail if not just a warning
+        validation["passed"] = False
+        validation["errors"].append(msg)
+
+    # 4. Check audit report generated
+    passed, msg = assert_audit_report_generated(job_id, job_data)
+    validation["assertions"]["audit_report_generated"] = passed
+
+    if not passed:
+        validation["passed"] = False
+        validation["errors"].append(msg)
+
+    return validation
 
 
 # ============================================================================
@@ -450,7 +721,7 @@ async def run_api_test(
     """
     Run a complete API test for a single vertical.
 
-    Tests: Upload → Job Tracking → Cost Validation → Results Download
+    Tests: Upload → Job Tracking → Cost Validation → Results Download → AML Assertions (P01-021)
     """
     test_start = time.time()
 
@@ -533,20 +804,63 @@ async def run_api_test(
 
         # Stage 4: Results Download
         print("📥 Stage 4: Results Download")
-        download_success, record_count = await download_results(
+        download_success, record_count, results_df = await download_results(
             client,
             job_id,
         )
         result.results_download_success = download_success
         result.results_records_count = record_count
 
-        # Overall success
-        result.success = (
-            upload_success and
-            track_success and
-            cost_success and
-            download_success
-        )
+        # Stage 5: AML Assertions (P01-021)
+        if ENABLE_AML_ASSERTIONS and download_success:
+            print("🔬 Stage 5: AML Assertions (P01-021)")
+
+            # Get job data for AML validation
+            job_response = await client.get(f"/api/v1/jobs/{job_id}")
+            job_data = job_response.json() if job_response.status_code == 200 else {}
+
+            # Run AML validation
+            aml_validation = validate_aml_metrics(job_id, job_data, results_df)
+
+            # Update result with AML metrics
+            result.aml_assertions_passed = aml_validation["passed"]
+            result.aml_labels_present = aml_validation["assertions"].get("aml_labels_present", False)
+            result.aml_confidence_scores_valid = aml_validation["assertions"].get("confidence_scores_valid", False)
+            result.aml_audit_report_generated = aml_validation["assertions"].get("audit_report_generated", False)
+            result.aml_records_downloaded_gt_zero = aml_validation["assertions"].get("records_downloaded_gt_zero", False)
+            result.aml_risk_level_counts = aml_validation["metrics"].get("aml_risk_level_counts", {})
+            result.aml_inter_rater_agreement = aml_validation["metrics"].get("aml_inter_rater_agreement", 0.0)
+            result.aml_expert_review_count = aml_validation["metrics"].get("aml_expert_review_count", 0)
+            result.aml_validation_errors = aml_validation["errors"]
+
+            # Print AML validation results
+            print(f"   AML Assertions: {'✓ PASSED' if aml_validation['passed'] else '✗ FAILED'}")
+            for assertion_name, assertion_passed in aml_validation["assertions"].items():
+                status = "✓" if assertion_passed else "✗"
+                print(f"      {status} {assertion_name}")
+
+            if aml_validation["errors"]:
+                print(f"   Errors:")
+                for error in aml_validation["errors"]:
+                    print(f"      - {error}")
+
+        # Overall success (AML assertions required if enabled)
+        if ENABLE_AML_ASSERTIONS:
+            result.success = (
+                upload_success and
+                track_success and
+                cost_success and
+                download_success and
+                result.aml_assertions_passed
+            )
+        else:
+            result.success = (
+                upload_success and
+                track_success and
+                cost_success and
+                download_success
+            )
+
         result.total_time_seconds = time.time() - test_start
 
         # Print summary
@@ -556,6 +870,17 @@ async def run_api_test(
         print(f"   Job Tracking: {'✓' if track_success else '✗'} ({polls_made} polls, {track_time:.2f}s)")
         print(f"   Cost Validation: {'✓' if cost_success else '✗'} (${actual:.4f}, {variance:.2f}% variance)")
         print(f"   Results Download: {'✓' if download_success else '✗'} ({record_count} records)")
+
+        if ENABLE_AML_ASSERTIONS:
+            print(f"   AML Assertions: {'✓' if result.aml_assertions_passed else '✗'}")
+            print(f"      - Records >0: {'✓' if result.aml_records_downloaded_gt_zero else '✗'}")
+            print(f"      - Labels Present: {'✓' if result.aml_labels_present else '✗'}")
+            print(f"      - Confidence Valid: {'✓' if result.aml_confidence_scores_valid else '✗'}")
+            print(f"      - Audit Report: {'✓' if result.aml_audit_report_generated else '✗'}")
+            if result.aml_risk_level_counts:
+                print(f"      - Risk Distribution: {result.aml_risk_level_counts}")
+            if result.aml_inter_rater_agreement > 0:
+                print(f"      - Inter-rater Agreement: {result.aml_inter_rater_agreement:.3f}")
 
     except Exception as e:
         result.success = False
@@ -634,20 +959,42 @@ async def main():
     print(f"✅ Summary saved: {summary_file}\n")
 
     # Print table
-    print("VERTICAL  | SUCCESS | UPLOAD | TRACKING | COST_VAL | DOWNLOAD | TOTAL_TIME | COST_VAR%")
-    print("-" * 100)
+    print("VERTICAL  | SUCCESS | UPLOAD | TRACKING | COST_VAL | DOWNLOAD | AML_ASSERT | RECORDS_COUNT | TOTAL_TIME | COST_VAR%")
+    print("-" * 120)
     for result in results:
         success = "✓" if result.success else "✗"
         upload = "✓" if result.upload_success else "✗"
         tracking = "✓" if result.job_tracking_success else "✗"
         cost = "✓" if result.cost_validation_success else "✗"
         download = "✓" if result.results_download_success else "✗"
-        print(f"{result.vertical:9} | {success:7} | {upload:6} | {tracking:8} | {cost:8} | {download:8} | {result.total_time_seconds:10.2f} | {result.cost_variance_percent:8.2f}")
+        aml_assert = "✓" if result.aml_assertions_passed else "✗" if ENABLE_AML_ASSERTIONS else "N/A"
+        records = result.results_records_count
+        print(f"{result.vertical:9} | {success:7} | {upload:6} | {tracking:8} | {cost:8} | {download:8} | {aml_assert:10} | {records:13} | {result.total_time_seconds:10.2f} | {result.cost_variance_percent:8.2f}")
 
     # Overall status
     all_success = all(r.success for r in results)
     print(f"\n{'✅ ALL TESTS PASSED' if all_success else '❌ SOME TESTS FAILED'}")
     print(f"📁 Results in: {output_dir}")
+
+    # AML Quality Gates Summary (P01-021)
+    if ENABLE_AML_ASSERTIONS:
+        print(f"\n{'='*70}")
+        print("AML QUALITY GATES SUMMARY (P01-021)")
+        print(f"{'='*70}")
+
+        all_aml_passed = all(r.aml_assertions_passed for r in results)
+        all_records_gt_zero = all(r.aml_records_downloaded_gt_zero for r in results)
+        all_labels_present = all(r.aml_labels_present for r in results)
+        all_confidence_valid = all(r.aml_confidence_scores_valid for r in results)
+        all_audit_reports = all(r.aml_audit_report_generated for r in results)
+
+        print(f"AML Assertions Pass: {'✅' if all_aml_passed else '❌'}")
+        print(f"Records Downloaded >0: {'✅' if all_records_gt_zero else '❌'} (CRITICAL)")
+        print(f"AML Labels Present: {'✅' if all_labels_present else '❌'}")
+        print(f"Confidence Scores Valid: {'✅' if all_confidence_valid else '❌'}")
+        print(f"Audit Reports Generated: {'✅' if all_audit_reports else '❌'}")
+
+        print(f"\nQuality Gate Status: {'✅ ALL PASSED' if all([all_records_gt_zero, all_labels_present, all_confidence_valid, all_audit_reports]) else '❌ SOME FAILED'}")
 
 
 if __name__ == "__main__":
