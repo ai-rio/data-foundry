@@ -456,6 +456,7 @@ async def test_complete_aml_pipeline_happy_path(
     retail_transaction_data,
     expert_review_sample,
     db_session,
+    prefect_context,
 ):
     """
     Test full AML pipeline from upload to download (happy path).
@@ -607,7 +608,9 @@ async def test_complete_aml_pipeline_happy_path(
 
 
 @pytest.mark.asyncio
-async def test_pipeline_with_empty_dataset(db_session):
+async def test_pipeline_with_empty_dataset(db_session,
+    prefect_context
+):
     """Test pipeline behavior with empty input dataset."""
     # Get task functions
     fns = get_task_functions()
@@ -649,6 +652,7 @@ async def test_multi_vertical_retail_banking(
     retail_transaction_data,
     banking_transaction_data,
     db_session,
+    prefect_context
 ):
     """
     Test AML pipeline with retail and banking verticals.
@@ -707,6 +711,7 @@ async def test_multi_vertical_crypto_high_risk(
     crypto_transaction_data,
     mock_ai_service,
     db_session,
+    prefect_context
 ):
     """
     Test AML pipeline with cryptocurrency vertical (high-risk).
@@ -765,6 +770,7 @@ async def test_vertical_specific_typologies(
     banking_transaction_data,
     crypto_transaction_data,
     mock_ai_service,
+    prefect_context
 ):
     """
     Test that FATF typologies are applied correctly per vertical.
@@ -825,7 +831,9 @@ async def test_vertical_specific_typologies(
 # =============================================================================
 
 @pytest.mark.asyncio
-async def test_pipeline_with_invalid_data(invalid_transaction_data):
+async def test_pipeline_with_invalid_data(invalid_transaction_data,
+    prefect_context
+):
     """Test pipeline with invalid transaction data."""
     # Get task functions
     fns = get_task_functions()
@@ -865,7 +873,9 @@ async def test_pipeline_with_invalid_data(invalid_transaction_data):
 
 
 @pytest.mark.asyncio
-async def test_pipeline_with_ai_service_timeout(retail_transaction_data):
+async def test_pipeline_with_ai_service_timeout(retail_transaction_data,
+    prefect_context
+):
     """Test pipeline when AI service times out."""
     # Get task functions
     fns = get_task_functions()
@@ -889,7 +899,9 @@ async def test_pipeline_with_ai_service_timeout(retail_transaction_data):
 
 
 @pytest.mark.asyncio
-async def test_pipeline_with_ai_service_error(retail_transaction_data):
+async def test_pipeline_with_ai_service_error(retail_transaction_data,
+    prefect_context
+):
     """Test pipeline when AI service returns an error."""
     # Get task functions
     fns = get_task_functions()
@@ -912,7 +924,9 @@ async def test_pipeline_with_ai_service_error(retail_transaction_data):
 
 
 @pytest.mark.asyncio
-async def test_pipeline_with_invalid_ai_response(retail_transaction_data):
+async def test_pipeline_with_invalid_ai_response(retail_transaction_data,
+    prefect_context
+):
     """Test pipeline when AI returns invalid JSON response."""
     # Get task functions
     fns = get_task_functions()
@@ -990,6 +1004,7 @@ async def test_pipeline_with_validation_errors():
 async def test_pipeline_database_connection_failure(
     retail_transaction_data,
     mock_ai_service,
+    prefect_context
 ):
     """Test pipeline when database connection fails."""
     # Get task functions
@@ -1025,6 +1040,7 @@ async def test_data_integrity_no_loss(
     retail_transaction_data,
     mock_ai_service,
     db_session,
+    prefect_context
 ):
     """
     Verify no data loss between pipeline steps.
@@ -1085,6 +1101,7 @@ async def test_audit_trail_completeness(
     retail_transaction_data,
     mock_ai_service,
     db_session,
+    prefect_context
 ):
     """
     Verify audit trail is complete for all records.
@@ -1144,6 +1161,7 @@ async def test_csv_export_matches_database(
     retail_transaction_data,
     mock_ai_service,
     db_session,
+    prefect_context
 ):
     """
     Verify CSV export matches database records exactly.
@@ -1222,6 +1240,7 @@ async def test_inter_rater_agreement_calculation(
     retail_transaction_data,
     expert_review_sample,
     mock_ai_service,
+    prefect_context
 ):
     """
     Test Cohen's Kappa calculation accuracy.
@@ -1276,6 +1295,7 @@ async def test_pipeline_performance_100_records(
     large_transaction_dataset,
     mock_ai_service,
     db_session,
+    prefect_context
 ):
     """
     Test pipeline performance with 100 transactions.
@@ -1335,6 +1355,7 @@ async def test_pipeline_performance_large_batch(
     large_transaction_dataset,
     mock_ai_service,
     db_session,
+    prefect_context
 ):
     """
     Test batch processing performance.
@@ -1397,6 +1418,7 @@ async def test_pipeline_concurrent_processing(
     crypto_transaction_data,
     mock_ai_service,
     db_session,
+    prefect_context
 ):
     """
     Test concurrent pipeline processing with multiple verticals.

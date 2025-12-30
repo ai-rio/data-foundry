@@ -1809,6 +1809,7 @@ async def save_aml_labels_to_database(
     from uuid import uuid4
     from sqlalchemy import text
     from sqlalchemy.dialects.postgresql import insert
+    import json
 
     logger = get_run_logger()
     start_time = datetime.utcnow()
@@ -1949,7 +1950,7 @@ async def save_aml_labels_to_database(
                                 "confidence_score": label["confidence_score"],
                                 "ai_reasoning": label["ai_reasoning"],
                                 "expert_review_status": label["expert_review_status"].value,
-                                "regulatory_flags": label["regulatory_flags"],
+                                "regulatory_flags": json.dumps(label["regulatory_flags"]) if label["regulatory_flags"] else None,
                                 "is_audit_ready": label["is_audit_ready"],
                                 "is_deleted": label["is_deleted"],
                                 "deleted_by": None,
@@ -1963,6 +1964,8 @@ async def save_aml_labels_to_database(
 
                         # Use PostgreSQL's insert ... on conflict for atomic upsert
                         # Bulk operation: single execute() with all parameters
+                        # NOTE: ON CONFLICT clause removed until unique constraint is added
+                        # to schema via migration. For now, duplicates will cause an error.
                         insert_stmt = text("""
                             INSERT INTO aml_transaction_labels (
                                 id, transaction_id, tenant_id, job_id, version_id,
@@ -1977,7 +1980,6 @@ async def save_aml_labels_to_database(
                                 :is_audit_ready, :is_deleted, :deleted_by, :deleted_at,
                                 :created_at, :updated_at, :updated_by
                             )
-                            ON CONFLICT (transaction_id, tenant_id) DO NOTHING
                         """)
 
                         # Bulk insert - single round-trip to database

@@ -253,9 +253,10 @@ class TestGenerateAuditReportIntegration:
         from src.tasks.ingestion import generate_audit_report
 
         report = await generate_audit_report(
+            job_id="test-job-123",
+            tenant_id="test-tenant",
             labeled_data=sample_labeled_data,
-            kappa_score=0.75,
-            expert_review_queue_size=2
+            kappa_score=0.75
         )
 
         assert "total_transactions" in report
@@ -271,6 +272,8 @@ class TestGenerateAuditReportIntegration:
         from src.tasks.ingestion import generate_audit_report
 
         report = await generate_audit_report(
+            job_id="test-job-123",
+            tenant_id="test-tenant",
             labeled_data=sample_labeled_data,
             kappa_score=0.75
         )
@@ -287,12 +290,13 @@ class TestGenerateAuditReportIntegration:
         from src.tasks.ingestion import generate_audit_report
 
         report = await generate_audit_report(
+            job_id="test-job-123",
+            tenant_id="test-tenant",
             labeled_data=sample_labeled_data,
-            kappa_score=0.85,
-            expert_review_queue_size=5
+            kappa_score=0.85
         )
 
-        assert report["inter_rater_agreement"]["kappa"] == 0.85
+        assert report["inter_rater_agreement"]["kappa_score"] == 0.85
         assert report["inter_rater_agreement"]["available"] is True
         assert "confidence_level" in report["inter_rater_agreement"]
 
@@ -302,12 +306,14 @@ class TestGenerateAuditReportIntegration:
         from src.tasks.ingestion import generate_audit_report
 
         report = await generate_audit_report(
+            job_id="test-job-123",
+            tenant_id="test-tenant",
             labeled_data=[],
             kappa_score=None
         )
 
         assert report["total_transactions"] == 0
-        assert report["inter_rater_agreement"]["kappa"] is None
+        assert report["inter_rater_agreement"]["kappa_score"] is None
 
 
 # =============================================================================
