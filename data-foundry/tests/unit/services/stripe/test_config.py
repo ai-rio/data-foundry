@@ -68,7 +68,7 @@ def test_api_key():
 @pytest.fixture
 def production_like_api_key():
     """Production-like API key for testing exposure prevention."""
-    return "sk_live_REDACTED_LIVE_KEY_PLACEHOLDER_XYZ789"
+    return "sk_live_MOCK_PLACEHOLDER_NOT_A_REAL_KEY_XYZ789"
 
 
 # ============================================================================

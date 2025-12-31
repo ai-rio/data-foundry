@@ -57,7 +57,7 @@ from src.services.stripe.exceptions import (
 SECURITY_TEST_VECTORS = {
     "api_keys": [
         "sk_test_REDACTED_TEST_KEY_PLACEHOLDER",
-        "sk_live_REDACTED_LIVE_KEY_PLACEHOLDER",
+        "sk_live_MOCK_PLACEHOLDER_NOT_A_REAL_KEY",
         "rk_test_REDACTED_PLACEHOLDER",
     ],
     "passwords": [
