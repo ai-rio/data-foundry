@@ -62,7 +62,7 @@ def clean_env():
 @pytest.fixture
 def test_api_key():
     """Test API key fixture - realistic format but not real."""
-    return "sk_test_REDACTED_TEST_KEY_PLACEHOLDER_ABC123"
+    return "sk_test_MOCK_PLACEHOLDER_NOT_A_REAL_KEY_ABC123"
 
 
 @pytest.fixture
