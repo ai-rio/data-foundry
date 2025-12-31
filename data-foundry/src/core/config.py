@@ -195,6 +195,19 @@ class Settings(BaseSettings):
     STRIPE_WEBHOOK_SECRET: str | None = None
     STRIPE_AI_LABEL_METER_ID: str | None = None
     STRIPE_HUMAN_AUDIT_METER_ID: str | None = None
+    STRIPE_AI_LABEL_METER_EVENT: str | None = None
+    STRIPE_HUMAN_AUDIT_METER_EVENT: str | None = None
+    STRIPE_GOLD_AI_LABELS_PRICE_ID: str | None = None
+    STRIPE_GOLD_HUMAN_AUDITS_PRICE_ID: str | None = None
+    STRIPE_GOLD_PLATFORM_FEE_PRICE_ID: str | None = None
+    STRIPE_SILVER_AI_LABELS_PRICE_ID: str | None = None
+    STRIPE_SILVER_HUMAN_AUDITS_PRICE_ID: str | None = None
+    STRIPE_SILVER_PLATFORM_FEE_PRICE_ID: str | None = None
+    STRIPE_BRONZE_AI_LABELS_PRICE_ID: str | None = None
+    STRIPE_BRONZE_HUMAN_AUDITS_PRICE_ID: str | None = None
+    STRIPE_BRONZE_PLATFORM_FEE_PRICE_ID: str | None = None
+    STRIPE_METER_EVENT_RETRY_ATTEMPTS: int = 5
+    STRIPE_METER_EVENT_BATCH_SIZE: int = 100
 
     # Security Settings
     ALGORITHM: str = "HS256"
@@ -388,7 +401,7 @@ class Settings(BaseSettings):
         return v
 
     model_config = ConfigDict(
-        env_file=".env",
+        env_file=[".env", ".env.local"],
         env_file_encoding="utf-8",
         case_sensitive=True
     )
